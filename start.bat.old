@@ -1,0 +1,88 @@
+@echo off
+chcp 65001
+echo === BOM管理系统启动脚本 ===
+rem 更新时间: 2025-11-14
+
+:: 检查Python环境
+python --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo 错误: 未找到Python，请先安装Python 3.8+
+    pause
+    exit /b 1
+)
+
+:: 检查Node.js环境
+node --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo 错误: 未找到Node.js，请先安装Node.js 16+
+    pause
+    exit /b 1
+)
+
+echo 1. 设置后端环境...
+
+:: 创建Python虚拟环境
+if not exist "backend\venv" (
+    echo 创建Python虚拟环境...
+    cd backend
+    python -m venv venv
+    cd ..
+)
+
+:: 激活虚拟环境并安装依赖
+echo 安装后端依赖...
+cd backend
+call venv\Scripts\activate
+pip install -r requirements.txt
+
+:: 复制环境配置文件
+if not exist ".env" (
+    echo 创建环境配置文件...
+    copy .env.example .env
+    echo 请编辑 backend\.env 文件配置数据库等信息
+)
+
+:: 初始化数据库
+echo 初始化数据库...
+python init_db.py
+
+echo 后端环境设置完成！
+cd ..
+
+echo 2. 设置前端环境...
+
+:: 安装前端依赖
+cd frontend
+if not exist "node_modules" (
+    echo 安装前端依赖...
+    npm install
+)
+
+echo 前端环境设置完成！
+cd ..
+
+echo 3. 启动服务...
+
+:: 启动后端服务
+echo 启动后端服务 (端口 5000)...
+cd backend
+call venv\Scripts\activate
+start "BOM Backend" python run.py
+cd ..
+
+:: 等待后端启动
+timeout /t 3 /nobreak >nul
+
+:: 启动前端服务
+echo 启动前端服务 (端口 8000)...
+cd frontend
+start "BOM Frontend" npm start
+cd ..
+
+echo === 服务启动完成 ===
+echo 前端访问地址: http://localhost:8000
+echo 后端API地址: http://localhost:5000
+echo 默认管理员账号: admin / admin123
+echo.
+echo 按任意键关闭此窗口
+pause >nul

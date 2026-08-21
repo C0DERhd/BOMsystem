@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Avatar Display</title>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+</head>
+<body>
+    <h1>Debug Avatar Display</h1>
+    <button onclick="loginAndTest()">Login and Test Avatar</button>
+    <div id="result"></div>
+
+    <script>
+        async function loginAndTest() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>Logging in...</p>';
+            
+            try {
+                // 登录
+                const loginResponse = await axios.post('http://localhost:5000/api/auth/login', {
+                    username: 'admin',
+                    password: 'admin123'
+                });
+                
+                if (!loginResponse.data.success) {
+                    resultDiv.innerHTML = '<p>Login failed: ' + loginResponse.data.message + '</p>';
+                    return;
+                }
+                
+                const accessToken = loginResponse.data.data.access_token;
+                const userId = loginResponse.data.data.user.id;
+                
+                resultDiv.innerHTML += '<p>Login successful. User ID: ' + userId + '</p>';
+                
+                // 获取当前用户信息
+                resultDiv.innerHTML += '<p>Getting current user info...</p>';
+                const meResponse = await axios.get('http://localhost:5000/api/auth/me', {
+                    headers: {
+                        'Authorization': 'Bearer ' + accessToken
+                    }
+                });
+                
+                const currentUser = meResponse.data.data.user;
+                resultDiv.innerHTML += '<p>Current avatar URL: ' + (currentUser.avatar || 'None') + '</p>';
+                
+                // 显示当前头像
+                if (currentUser.avatar) {
+                    resultDiv.innerHTML += '<img src="http://localhost:5000' + currentUser.avatar + '" style="width: 100px; height: 100px; border: 1px solid #ccc;">';
+                }
+                
+            } catch (error) {
+                resultDiv.innerHTML += '<p>Error: ' + (error.response?.data?.message || error.message) + '</p>';
+            }
+        }
+    </script>
+</body>
+</html>

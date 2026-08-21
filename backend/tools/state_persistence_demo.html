@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>零件号申请页面状态保持演示</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: inline-block;
+            width: 100px;
+            font-weight: bold;
+        }
+        select, button {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        button {
+            background-color: #1890ff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #40a9ff;
+        }
+        .clear-btn {
+            background-color: #ff4d4f;
+        }
+        .clear-btn:hover {
+            background-color: #ff7875;
+        }
+        .part-number-display {
+            background-color: #f0f2f5;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .part-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1890ff;
+            text-align: center;
+        }
+        .list {
+            list-style-type: none;
+            padding: 0;
+        }
+        .list li {
+            padding: 8px;
+            border-bottom: 1px solid #ddd;
+        }
+        .info-box {
+            background-color: #e6f7ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>零件号申请页面状态保持演示</h1>
+        
+        <div class="form-group">
+            <h2>选择类别</h2>
+            <div>
+                <label>零部件类别:</label>
+                <select id="partCategory">
+                    <option value="">请选择</option>
+                    <option value="custom">定制件</option>
+                    <option value="purchased">外购件</option>
+                </select>
+            </div>
+            
+            <div style="margin-top: 10px;">
+                <label>大类:</label>
+                <select id="mainCategory" disabled>
+                    <option value="">请选择</option>
+                    <option value="optical">光学件</option>
+                    <option value="mechanical">机械件</option>
+                    <option value="electrical">电气/子件</option>
+                </select>
+            </div>
+            
+            <div style="margin-top: 10px;">
+                <label>小类:</label>
+                <select id="subCategory" disabled>
+                    <option value="">请选择</option>
+                    <option value="type1">类型1</option>
+                    <option value="type2">类型2</option>
+                    <option value="type3">类型3</option>
+                </select>
+            </div>
+        </div>
+        
+        <div>
+            <button id="generateBtn" disabled>申请零件号</button>
+            <button id="clearBtn" class="clear-btn">清空状态</button>
+        </div>
+        
+        <div id="partNumberDisplay" class="part-number-display" style="display: none;">
+            <h3>生成的零件号:</h3>
+            <div id="currentPartNumber" class="part-number"></div>
+        </div>
+        
+        <div id="listContainer" style="display: none;">
+            <h3>已生成的零件号列表:</h3>
+            <ul id="partNumberList" class="list"></ul>
+        </div>
+        
+        <div class="info-box">
+            <h3>状态保持说明:</h3>
+            <ul>
+                <li>选择的类别会在页面刷新或切换后保持</li>
+                <li>已生成的零件号列表会持久保存</li>
+                <li>状态保存在浏览器的localStorage中</li>
+                <li>可以点击"清空状态"按钮重置所有状态</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 状态管理
+        let state = {
+            partCategory: '',
+            mainCategory: '',
+            subCategory: '',
+            generatedPartNumbers: [],
+            currentPartNumber: ''
+        };
+
+        // DOM元素
+        const partCategorySelect = document.getElementById('partCategory');
+        const mainCategorySelect = document.getElementById('mainCategory');
+        const subCategorySelect = document.getElementById('subCategory');
+        const generateBtn = document.getElementById('generateBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const partNumberDisplay = document.getElementById('partNumberDisplay');
+        const currentPartNumberDiv = document.getElementById('currentPartNumber');
+        const listContainer = document.getElementById('listContainer');
+        const partNumberList = document.getElementById('partNumberList');
+
+        // 事件监听器
+        partCategorySelect.addEventListener('change', handlePartCategoryChange);
+        mainCategorySelect.addEventListener('change', handleMainCategoryChange);
+        subCategorySelect.addEventListener('change', handleSubCategoryChange);
+        generateBtn.addEventListener('click', generatePartNumber);
+        clearBtn.addEventListener('click', clearState);
+
+        // 处理零部件类别变化
+        function handlePartCategoryChange() {
+            state.partCategory = partCategorySelect.value;
+            updateState();
+            
+            // 启用/禁用其他选择器
+            mainCategorySelect.disabled = !state.partCategory;
+            if (!state.partCategory) {
+                mainCategorySelect.value = '';
+                subCategorySelect.value = '';
+                subCategorySelect.disabled = true;
+                generateBtn.disabled = true;
+            }
+        }
+
+        // 处理大类变化
+        function handleMainCategoryChange() {
+            state.mainCategory = mainCategorySelect.value;
+            updateState();
+            
+            // 启用/禁用小类选择器
+            subCategorySelect.disabled = !state.mainCategory;
+            if (!state.mainCategory) {
+                subCategorySelect.value = '';
+            }
+            
+            // 更新申请按钮状态
+            generateBtn.disabled = !(state.partCategory && state.mainCategory);
+        }
+
+        // 处理小类变化
+        function handleSubCategoryChange() {
+            state.subCategory = subCategorySelect.value;
+            updateState();
+        }
+
+        // 生成零件号
+        function generatePartNumber() {
+            // 简单的零件号生成逻辑
+            const categoryCode = state.partCategory === 'custom' ? '0' : '5';
+            const mainCode = state.mainCategory === 'optical' ? '00' : 
+                            state.mainCategory === 'mechanical' ? '20' : '40';
+            const subCode = '00';
+            const productNum = state.generatedPartNumbers.length.toString().padStart(4, '0');
+            const version = '01';
+            
+            const newPartNumber = `${categoryCode}${mainCode}${subCode}${productNum}${version}`;
+            
+            state.currentPartNumber = newPartNumber;
+            state.generatedPartNumbers.push(newPartNumber);
+            
+            updateState();
+            render();
+        }
+
+        // 清空状态
+        function clearState() {
+            state = {
+                partCategory: '',
+                mainCategory: '',
+                subCategory: '',
+                generatedPartNumbers: [],
+                currentPartNumber: ''
+            };
+            
+            localStorage.removeItem('partNumberDemoState');
+            render();
+        }
+
+        // 更新状态到localStorage
+        function updateState() {
+            localStorage.setItem('partNumberDemoState', JSON.stringify(state));
+        }
+
+        // 从localStorage恢复状态
+        function restoreState() {
+            const savedState = localStorage.getItem('partNumberDemoState');
+            if (savedState) {
+                try {
+                    state = JSON.parse(savedState);
+                    
+                    // 恢复表单值
+                    partCategorySelect.value = state.partCategory || '';
+                    mainCategorySelect.value = state.mainCategory || '';
+                    subCategorySelect.value = state.subCategory || '';
+                    
+                    // 设置选择器状态
+                    mainCategorySelect.disabled = !state.partCategory;
+                    subCategorySelect.disabled = !(state.partCategory && state.mainCategory);
+                    generateBtn.disabled = !(state.partCategory && state.mainCategory);
+                } catch (e) {
+                    console.error('恢复状态失败:', e);
+                }
+            }
+        }
+
+        // 渲染界面
+        function render() {
+            // 显示当前零件号
+            if (state.currentPartNumber) {
+                partNumberDisplay.style.display = 'block';
+                currentPartNumberDiv.textContent = state.currentPartNumber;
+            } else {
+                partNumberDisplay.style.display = 'none';
+            }
+            
+            // 显示零件号列表
+            if (state.generatedPartNumbers.length > 0) {
+                listContainer.style.display = 'block';
+                partNumberList.innerHTML = '';
+                state.generatedPartNumbers.forEach((number, index) => {
+                    const li = document.createElement('li');
+                    li.textContent = `${index + 1}. ${number}`;
+                    partNumberList.appendChild(li);
+                });
+            } else {
+                listContainer.style.display = 'none';
+            }
+        }
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            restoreState();
+            render();
+        });
+    </script>
+</body>
+</html>

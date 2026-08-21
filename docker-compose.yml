@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: bom_redis
+  #   ports:
+  #     - "6380:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bom_backend
+    environment:
+      FLASK_CONFIG: production
+      DATABASE_URL: mysql+pymysql://zhanchao_wang:Visiray88!!@host.docker.internal:3306/bom_prod
+      VISIRAY_DATABASE_URL: mysql+pymysql://root:Visiray88!!@host.docker.internal:3306/visiray
+      # REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: a8f3d8e5b2c9f4e7a1d6c3b9e2f8d4c7a5b9e1f3d7c2a4b8e6f9d1c5a7b3e8f2
+      JWT_SECRET_KEY: f2e8d1c5a7b3e8f2a4b8e6f9d1c5a7b3e8f2d1c5a7b3e8f2a4b8e6f9d1c5a7b3
+    ports:
+      - "5000:5000"
+    # depends_on:
+    #   - redis
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+      - backend_uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bom_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  # redis_data:
+  backend_uploads:

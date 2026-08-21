@@ -1,0 +1,11 @@
+20260122修改：零件号使用VSR4代替目前的VISB
+
+PN_HEAD = "VSR4"
+（???为了兼容已存在的VISB，还需保留程序中对它的处理逻辑）
+
+在以下文件中查找修改记录：
+backend\app\api\visiray.py
+frontend\src\pages\inbound\InboundRecords.tsx
+frontend\src\pages\inventory\InventoryManagement.tsx
+frontend\src\pages\outbound\OutboundRecords.tsx
+frontend\src\pages\supplier\PartNumberApplicationPage.tsx

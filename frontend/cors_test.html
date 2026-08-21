@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CORS测试</title>
+</head>
+<body>
+    <h1>CORS测试</h1>
+    <button onclick="testLogin()">测试登录</button>
+    <div id="result"></div>
+
+    <script>
+        async function testLogin() {
+            const resultDiv = document.getElementById('result');
+            try {
+                const response = await fetch('http://localhost:5000/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: 'admin',
+                        password: 'admin123'
+                    })
+                });
+                
+                const data = await response.json();
+                resultDiv.innerHTML = `
+                    <p>状态码: ${response.status}</p>
+                    <p>登录成功: ${data.success}</p>
+                    <p>消息: ${data.message}</p>
+                    <p>用户: ${data.data?.user?.username}</p>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<p>错误: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

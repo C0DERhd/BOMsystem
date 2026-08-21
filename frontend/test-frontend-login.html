@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>测试前端登录</title>
+</head>
+<body>
+    <h1>测试前端登录功能</h1>
+    <form id="loginForm">
+        <label for="username">用户名:</label>
+        <input type="text" id="username" name="username" value="admin" required><br><br>
+        
+        <label for="password">密码:</label>
+        <input type="password" id="password" name="password" value="admin123" required><br><br>
+        
+        <button type="submit">登录</button>
+    </form>
+    
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                const response = await fetch('http://localhost:8001/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+                
+                const data = await response.json();
+                resultDiv.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                
+                if (data.success) {
+                    resultDiv.innerHTML += '<p style="color: green;">登录成功!</p>';
+                } else {
+                    resultDiv.innerHTML += '<p style="color: red;">登录失败!</p>';
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p style="color: red;">错误: ${error.message}</p>`;
+            }
+        });
+    </script>
+</body>
+</html>

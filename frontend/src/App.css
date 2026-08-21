@@ -1,0 +1,119 @@
+.App {
+  text-align: center;
+}
+
+.ant-layout {
+  min-height: 100vh;
+}
+
+.ant-layout-sider {
+  box-shadow: 2px 0 6px rgba(0, 21, 41, 0.35);
+}
+
+.ant-layout-header {
+  background: #fff;
+  padding: 0 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.ant-layout-content {
+  margin: 16px;
+  padding: 24px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+/* 登录页面样式 */
+.login-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.login-form {
+  background: white;
+  padding: 40px;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  width: 400px;
+}
+
+.login-title {
+  text-align: center;
+  margin-bottom: 30px;
+  color: #1890ff;
+  font-size: 24px;
+  font-weight: bold;
+}
+
+/* 表格样式 */
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.table-header h2 {
+  margin: 0;
+}
+
+/* BOM树形结构样式 */
+.bom-tree {
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.bom-tree-node {
+  padding: 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.bom-tree-node:last-child {
+  border-bottom: none;
+}
+
+/* 物料编码显示样式 */
+.material-code {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-weight: bold;
+  color: #722ed1;
+  background: #f9f0ff;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* 状态标签样式 */
+.status-active {
+  color: #52c41a;
+}
+
+.status-inactive {
+  color: #ff4d4f;
+}
+
+.status-draft {
+  color: #faad14;
+}
+
+/* 响应式样式 */
+@media (max-width: 768px) {
+  .ant-layout-content {
+    margin: 8px;
+    padding: 16px;
+  }
+  
+  .login-form {
+    margin: 16px;
+    width: auto;
+  }
+  
+  .table-header {
+    flex-direction: column;
+    gap: 16px;
+    align-items: stretch;
+  }
+}
