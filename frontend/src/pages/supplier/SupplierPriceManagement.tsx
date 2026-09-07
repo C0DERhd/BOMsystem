@@ -83,10 +83,16 @@ const SupplierPriceManagement: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<SupplierPrice | null>(null);
+  const [selectedPartOption, setSelectedPartOption] = useState<PartOption | undefined>();
+  const optionsRequestRef = React.useRef(0);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
   const isAdmin = authService.isAdmin();
   const selectedPartId = Form.useWatch('part_id', form) as string | undefined;
-  const selectedPart = useMemo(() => parts.find((item) => item.part_id === selectedPartId), [parts, selectedPartId]);
+  const selectedPart = useMemo(
+    () => parts.find((item) => item.part_id === selectedPartId) ||
+      (selectedPartOption?.part_id === selectedPartId ? selectedPartOption : undefined),
+    [parts, selectedPartId, selectedPartOption]
+  );
 
   const partOptions = useMemo(
     () => parts.map((item) => ({
@@ -116,15 +122,31 @@ const SupplierPriceManagement: React.FC = () => {
   );
 
   const fetchOptions = async (params: { part_keyword?: string; supplier_keyword?: string } = {}) => {
+    const requestId = ++optionsRequestRef.current;
     try {
       setOptionsLoading(true);
       const response = await api.get('/visiray/supplier-price-options', { params });
-      if (response.data.success) {
-        setParts(response.data.data.parts || []);
+      // Search requests can finish out of order. Only the newest response may
+      // replace the option lists, otherwise a stale result can hide a pasted
+      // exact part number and make its version selector appear disabled.
+      if (requestId === optionsRequestRef.current && response.data.success) {
+        const nextParts = response.data.data.parts || [];
+        const currentPartId = form.getFieldValue('part_id') as string | undefined;
+        const preservedPart = currentPartId
+          ? selectedPartOption?.part_id === currentPartId
+            ? selectedPartOption
+            : parts.find((item) => item.part_id === currentPartId)
+          : undefined;
+        if (preservedPart && !nextParts.some((item: PartOption) => item.part_id === preservedPart.part_id)) {
+          nextParts.unshift(preservedPart);
+        }
+        setParts(nextParts);
         setSuppliers(response.data.data.suppliers || []);
       }
     } finally {
-      setOptionsLoading(false);
+      if (requestId === optionsRequestRef.current) {
+        setOptionsLoading(false);
+      }
     }
   };
 
@@ -163,6 +185,7 @@ const SupplierPriceManagement: React.FC = () => {
 
   const openCreate = () => {
     setEditingItem(null);
+    setSelectedPartOption(undefined);
     fetchOptions().catch((error) => {
       message.error(error?.response?.data?.message || error?.message || '获取选项失败');
     });
@@ -179,10 +202,12 @@ const SupplierPriceManagement: React.FC = () => {
 
   const openEdit = (record: SupplierPrice) => {
     setEditingItem(record);
-    fetchOptions().catch((error) => {
+    fetchOptions({ part_keyword: record.part_id || undefined }).catch((error) => {
       message.error(error?.response?.data?.message || error?.message || '获取选项失败');
     });
     form.resetFields();
+    const recordPart = parts.find((item) => item.part_id === record.part_id);
+    setSelectedPartOption(recordPart);
     form.setFieldsValue({
       part_id: record.part_id,
       part_version_id: record.part_version_id ? String(record.part_version_id) : '',
@@ -375,12 +400,16 @@ const SupplierPriceManagement: React.FC = () => {
                 loading={optionsLoading}
                 notFoundContent={optionsLoading ? '加载中...' : '暂无零件号，请先在零件号申请/管理中创建'}
                 onDropdownVisibleChange={(open) => {
-                  if (open) fetchOptions().catch(() => undefined);
+                  if (open && parts.length === 0) fetchOptions().catch(() => undefined);
                 }}
-              onSearch={(value) => {
-                  fetchOptions({ part_keyword: value }).catch(() => undefined);
+                onSearch={(value) => {
+                  fetchOptions({ part_keyword: value.trim() }).catch(() => undefined);
                 }}
-                onChange={() => form.setFieldsValue({ part_version_id: '' })}
+                onChange={(value) => {
+                  const part = parts.find((item) => item.part_id === value);
+                  setSelectedPartOption(part);
+                  form.setFieldsValue({ part_version_id: '' });
+                }}
                 options={partOptions}
               />
             </Form.Item>
@@ -400,7 +429,7 @@ const SupplierPriceManagement: React.FC = () => {
                 loading={optionsLoading}
                 notFoundContent={optionsLoading ? '加载中...' : '暂无供应商，请先在供应商信息中创建'}
                 onDropdownVisibleChange={(open) => {
-                  if (open) fetchOptions().catch(() => undefined);
+                  if (open && suppliers.length === 0) fetchOptions().catch(() => undefined);
                 }}
                 onSearch={(value) => {
                   fetchOptions({ supplier_keyword: value }).catch(() => undefined);

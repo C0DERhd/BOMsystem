@@ -191,22 +191,11 @@ const normalizeRuleConfig = (config: any = {}, fallback: any = {}) => {
       : Array.isArray(fallback.segments)
         ? fallback.segments.map((segment: any) => ({ ...segment }))
         : [],
-    part_categories: {
-      ...(fallback.part_categories || {}),
-      ...(sourcePartCategories || {}),
-    },
-    main_categories: {
-      ...(fallback.main_categories || {}),
-      ...(sourceMainCategories || {}),
-    },
-    sub_categories: {
-      ...(fallback.sub_categories || {}),
-      ...(sourceSubCategories || {}),
-    },
-    sub_category_orders: {
-      ...(fallback.sub_category_orders || {}),
-      ...(sourceSubCategoryOrders || {}),
-    },
+    // 编辑已有规则时，必须以规则自身的列表为准，否则删除一项后又会被默认配置补回来。
+    part_categories: sourcePartCategories,
+    main_categories: sourceMainCategories,
+    sub_categories: sourceSubCategories,
+    sub_category_orders: sourceSubCategoryOrders,
   };
 };
 
@@ -227,7 +216,7 @@ const configToFormValues = (config: any = {}, rule?: PartNumberRule | null, fall
   };
 };
 
-const formValuesToConfig = (values: any) => {
+const formValuesToConfig = (values: any, previousConfig: any = {}) => {
   const part_categories: Record<string, any> = {};
   (values.part_categories || []).forEach((item: any) => {
     if (!item?.category_key) return;
@@ -262,12 +251,34 @@ const formValuesToConfig = (values: any) => {
   const configuredSubCategoryLabelToKey = Object.fromEntries(
     Object.entries(sub_categories).map(([key, item]: [string, any]) => [item.name, key])
   );
+  const previousSubCategories = previousConfig?.sub_categories || {};
+  const previousSubCategoryLabelToKey = Object.fromEntries(
+    Object.entries(previousSubCategories).map(([key, item]: [string, any]) => [item.name, key])
+  );
+  const currentSubCategoryKeyByCode = Object.fromEntries(
+    Object.entries(sub_categories)
+      .filter(([, item]: [string, any]) => item?.code != null)
+      .map(([key, item]: [string, any]) => [String(item.code).padStart(2, '0'), key])
+  );
 
   const sub_category_orders: Record<string, string[]> = {};
   (values.sub_category_orders || []).forEach((item: any) => {
     if (!item?.main_category_key) return;
     const orderKey = item.main_category_key;
-    sub_category_orders[orderKey] = splitLines(item.values_text).map((line) => configuredSubCategoryLabelToKey[line] || subCategoryLabelToKey[line] || line);
+    sub_category_orders[orderKey] = splitLines(item.values_text)
+      .map((line) => {
+        const currentKey = configuredSubCategoryLabelToKey[line] || subCategoryLabelToKey[line];
+        if (currentKey && sub_categories[currentKey]) return currentKey;
+
+        // 三级编码改名或更换系统标识时，若仍使用原数字编码，自动迁移适用项引用。
+        const previousKey = previousSubCategoryLabelToKey[line] || line;
+        const previousCode = previousSubCategories[previousKey]?.code;
+        if (previousCode != null) {
+          return currentSubCategoryKeyByCode[String(previousCode).padStart(2, '0')] || '';
+        }
+        return '';
+      })
+      .filter(Boolean);
   });
 
   return {
@@ -362,13 +373,16 @@ const PartNumberRuleManagementPage: React.FC = () => {
 
   const saveRule = async () => {
     try {
-      const values = await form.validateFields();
+      // validateFields 的返回值可能只包含当前已注册的页签字段；
+      // getFieldsValue(true) 才能读取 Form.List 中所有已保留的配置。
+      await form.validateFields();
+      const values = form.getFieldsValue(true);
       validateRule(values);
       const payload = {
         rule_name: values.rule_name,
         prefix: values.prefix || '',
         remark: values.remark || '',
-        config: formValuesToConfig(values),
+        config: formValuesToConfig(values, editingRule?.config || {}),
       };
       setSaving(true);
       if (editingRule) {
@@ -379,7 +393,7 @@ const PartNumberRuleManagementPage: React.FC = () => {
         message.success('零件号规则已创建');
       }
       setModalOpen(false);
-      fetchRules();
+      await fetchRules();
     } catch (error: any) {
       if (error?.errorFields) return;
       message.error(error?.response?.data?.message || error?.message || '保存零件号规则失败');
@@ -556,6 +570,7 @@ const PartNumberRuleManagementPage: React.FC = () => {
           </Form.Item>
 
           <Tabs
+            destroyInactiveTabPane={false}
             items={[
               {
                 key: 'segments',

@@ -283,7 +283,32 @@ def _generate_unique_out_record_id():
 def _part_material_marker(part_id: str) -> str:
     return f"VISIRAY_PART_ID:{part_id}"
 
+def _part_number_material_code(part_id: str) -> str:
+    """Return the numeric body of a configured part number for inventory linkage."""
+    raw = _clean_part_number_input(part_id)
+    prefix = ''
+    try:
+        prefix = PartNumberRuleService.get_active_rule().prefix or ''
+    except Exception:
+        pass
+
+    body = raw
+    if prefix and body.startswith(prefix):
+        body = body[len(prefix):]
+    else:
+        body = _strip_part_prefix(body)
+
+    digits = re.sub(r'\D', '', body)
+    if len(digits) != 12:
+        raise ValueError("零件号必须包含12位数字编码，无法同步库存物料")
+    return digits
+
 def _generate_part_material_code(part):
+    configured_code = _part_number_material_code(part.part_id)
+    if not Material.query.filter_by(material_code=configured_code).first():
+        return configured_code
+
+    # 仅处理历史数据造成的极少数编码冲突；新零件号正常情况下不会进入这里。
     material_type = 'purchase' if part.category == 'purchased' else 'custom'
     part_category = part.main_type if part.main_type in {'mechanical', 'optical', 'electrical'} else 'mechanical'
     for classification in range(0, 100):
@@ -296,7 +321,7 @@ def _generate_part_material_code(part):
         )
         if not Material.query.filter_by(material_code=code).first():
             return code
-    raise ValueError("Unable to generate material code for part number")
+    raise ValueError("零件号对应的库存物料编码已存在，且历史物料备用编码已用完")
 
 def _sync_material_from_part_number(part, created_by=None):
     material = Material.query.filter_by(visiray_part_id=part.part_id).first()
@@ -2378,6 +2403,130 @@ def create_visiray_supplier():
         }), 500
 
 
+@bp.route('/visiray/suppliers/<path:supplier_code>', methods=['PUT'])
+@jwt_required(optional=True)
+def update_visiray_supplier(supplier_code):
+    """编辑供应商信息，供应商编号和名称不可修改。"""
+    try:
+        user, error = _require_admin()
+        if error:
+            return error
+
+        code = (supplier_code or '').strip()
+        data = request.get_json() or {}
+        source = (request.args.get('source') or data.get('source') or '').strip()
+
+        formal_supplier = None
+        legacy_supplier = None
+        if source == 'suppliers':
+            formal_supplier = Supplier.query.filter_by(supplier_code=code).first()
+        elif source == 'supplier_information':
+            legacy_supplier = VisiraySupplierInformation.query.filter_by(supplier_code=code).first()
+        else:
+            formal_supplier = Supplier.query.filter_by(supplier_code=code).first()
+            if not formal_supplier:
+                legacy_supplier = VisiraySupplierInformation.query.filter_by(supplier_code=code).first()
+
+        supplier = formal_supplier or legacy_supplier
+        if not supplier:
+            return jsonify({'success': False, 'message': '供应商不存在'}), 404
+
+        # 编号和名称由系统主数据决定，后端也拒绝修改，不能只依赖前端只读。
+        if 'supplier_code' in data and (data.get('supplier_code') or '').strip() != code:
+            return jsonify({'success': False, 'message': '供应商编号不可修改'}), 400
+        if 'supplier_name' in data and (data.get('supplier_name') or '').strip() != (supplier.supplier_name or ''):
+            return jsonify({'success': False, 'message': '供应商名称不可修改'}), 400
+
+        def value(name, alias=None):
+            key = name if name in data else alias
+            return data.get(key) if key else None
+
+        if formal_supplier:
+            for field in ('phone', 'email', 'address', 'contact_person'):
+                if field in data:
+                    setattr(formal_supplier, field, (data.get(field) or '').strip() or None)
+            if 'remarks' in data or 'remark' in data:
+                formal_supplier.remark = (value('remarks', 'remark') or '').strip() or None
+            formal_supplier.updated_at = datetime.utcnow()
+            result = _supplier_display_dict(formal_supplier)
+            result.update({
+                'address': formal_supplier.address,
+                'contact_person': formal_supplier.contact_person,
+                'remark': formal_supplier.remark,
+                'source': 'suppliers',
+            })
+        else:
+            field_aliases = {
+                'supplier_name': 'supplier_name',
+                'phone': 'phone',
+                'email': 'email',
+                'address': 'address',
+                'contact_person': 'contact_person',
+                'position': 'position',
+                'coordinator': 'coordinator',
+                'purchase_voucher_ref': 'purchase_voucher_ref',
+                'stock_in_record': 'stock_in_record',
+                'operator_name': 'operator_name',
+            }
+            for field, payload_key in field_aliases.items():
+                if payload_key in data and field != 'supplier_name':
+                    setattr(legacy_supplier, field, (data.get(payload_key) or '').strip() or None)
+            if 'remarks' in data or 'remark' in data:
+                legacy_supplier.remarks = (value('remarks', 'remark') or '').strip() or None
+            legacy_supplier.updated_at = datetime.utcnow()
+            result = legacy_supplier.to_dict()
+            result['id'] = legacy_supplier.id
+            result['source'] = 'supplier_information'
+
+        db.session.commit()
+        return jsonify({'success': True, 'message': '供应商信息更新成功', 'data': result})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': f'更新供应商信息失败: {str(e)}'}), 500
+
+
+@bp.route('/visiray/suppliers/<path:supplier_code>', methods=['DELETE'])
+@jwt_required(optional=True)
+def delete_visiray_supplier(supplier_code):
+    """删除供应商。已有报价关联的正式供应商禁止物理删除。"""
+    try:
+        user, error = _require_admin()
+        if error:
+            return error
+
+        code = (supplier_code or '').strip()
+        source = (request.args.get('source') or '').strip()
+        formal_supplier = None
+        legacy_supplier = None
+        if source == 'suppliers':
+            formal_supplier = Supplier.query.filter_by(supplier_code=code).first()
+        elif source == 'supplier_information':
+            legacy_supplier = VisiraySupplierInformation.query.filter_by(supplier_code=code).first()
+        else:
+            formal_supplier = Supplier.query.filter_by(supplier_code=code).first()
+            if not formal_supplier:
+                legacy_supplier = VisiraySupplierInformation.query.filter_by(supplier_code=code).first()
+
+        supplier = formal_supplier or legacy_supplier
+        if not supplier:
+            return jsonify({'success': False, 'message': '供应商不存在'}), 404
+
+        if formal_supplier:
+            quote_count = MaterialSupplier.query.filter_by(supplier_id=formal_supplier.id).count()
+            if quote_count:
+                return jsonify({
+                    'success': False,
+                    'message': f'该供应商已有 {quote_count} 条供应商报价，不能删除。请先停用或处理相关报价。'
+                }), 400
+
+        db.session.delete(supplier)
+        db.session.commit()
+        return jsonify({'success': True, 'message': '供应商删除成功'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': f'删除供应商失败: {str(e)}'}), 500
+
+
 @bp.route('/visiray/supplier-price-options', methods=['GET'])
 def get_supplier_price_options():
     """Options used by supplier price management."""
@@ -3155,6 +3304,7 @@ def apply_part_number():
         part_name = (data.get('partName') or data.get('part_name') or '').strip()
         unit = data.get('unit') or 'pcs'
         standard_cost = _to_float(data.get('standard_cost', data.get('standardCost', 0)))
+        remark = (data.get('remark') or '').strip() or None
         # 闆朵欢鎻忚堪
         part_description = data.get('partDescription')
         # 渚涘簲鍟?
@@ -3192,6 +3342,7 @@ def apply_part_number():
             part_name=(part_name or None),
             unit=unit,
             standard_cost=standard_cost,
+            remark=remark,
             created_by=(getattr(user, 'id', None) if user else None),
             created_by_name=((getattr(user, 'name', None) or getattr(user, 'username', None) or getattr(user, 'email', None)) if user else None)
         )
@@ -3541,6 +3692,8 @@ def update_part_number(part_id):
             record.unit = data.get('unit') or 'pcs'
         if 'standard_cost' in data:
             record.standard_cost = _to_float(data.get('standard_cost'))
+        if 'remark' in data:
+            record.remark = (data.get('remark') or '').strip() or None
         synced_material = _sync_material_from_part_number(record, getattr(user, 'id', None))
         db.session.commit()
         data = record.to_dict()
@@ -3912,6 +4065,7 @@ def import_part_number():
         unit = data.get('unit') or 'pcs'
         standard_cost = _to_float(data.get('standard_cost', 0))
         part_name = (data.get('part_name') or '').strip() or None
+        remark = (data.get('remark') or '').strip() or None
 
         if not part_id:
             return jsonify({'success': False, 'message': '请提供零件号'}), 400
@@ -3939,6 +4093,8 @@ def import_part_number():
                 exists.part_name = part_name
             exists.unit = unit
             exists.standard_cost = standard_cost
+            if 'remark' in data:
+                exists.remark = remark
             synced_material = _sync_material_from_part_number(exists, getattr(user, 'id', None) if user else None)
             db.session.commit()
             data = exists.to_dict()
@@ -4122,6 +4278,7 @@ def import_part_numbers_from_xlsx():
                 part_name = entry['part_name'] or None
                 unit = entry['unit'] or 'pcs'
                 standard_cost = entry['standard_cost']
+                remark = entry['remark'] or None
 
                 existing = VisirayPartNumber.query.get(part_id)
                 if existing:
@@ -4131,6 +4288,8 @@ def import_part_numbers_from_xlsx():
                         existing.unit = unit
                     if standard_cost is not None:
                         existing.standard_cost = standard_cost
+                    if entry['remark'] is not None:
+                        existing.remark = remark
                     _sync_material_from_part_number(existing, getattr(user, 'id', None))
                     db.session.flush()
                     remember_part_name(existing)
@@ -4146,6 +4305,7 @@ def import_part_numbers_from_xlsx():
                     part_name=part_name,
                     unit=unit,
                     standard_cost=standard_cost if standard_cost is not None else 0,
+                    remark=remark,
                     created_by=(getattr(user, 'id', None) if user else None),
                     created_by_name=((getattr(user, 'name', None) or getattr(user, 'username', None) or getattr(user, 'email', None)) if user else None)
                 )

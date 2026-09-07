@@ -137,6 +137,13 @@ class PartNumberRuleService:
                 final_rule.is_active = True
                 db.session.flush()
                 return final_rule
+            repaired_config = cls._migrate_sub_category_orders(
+                DEFAULT_PART_NUMBER_RULE_CONFIG,
+                active.get_config(),
+            )
+            if repaired_config != active.get_config():
+                active.set_config(repaired_config)
+                db.session.flush()
             return active
 
         VisirayPartNumberRule.query.update({VisirayPartNumberRule.is_active: False})
@@ -190,8 +197,10 @@ class PartNumberRuleService:
             raise ValueError("规则不存在")
 
         if "config" in data:
-            cls.validate_config(data.get("config") or {})
-            rule.set_config(data.get("config") or {})
+            config = copy.deepcopy(data.get("config") or {})
+            config = cls._migrate_sub_category_orders(rule.get_config(), config)
+            cls.validate_config(config)
+            rule.set_config(config)
         if "rule_name" in data:
             rule.rule_name = (data.get("rule_name") or "零件号规则").strip()
         if "prefix" in data:
@@ -201,6 +210,77 @@ class PartNumberRuleService:
         rule.updated_by = user_id
         db.session.flush()
         return rule
+
+    @staticmethod
+    def _migrate_sub_category_orders(
+        previous_config: Dict[str, Any],
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Keep order references valid when a tertiary item is renamed or replaced."""
+        previous_sub_categories = previous_config.get("sub_categories") or {}
+        sub_categories = config.get("sub_categories") or {}
+        orders = config.get("sub_category_orders")
+
+        if not isinstance(orders, dict) or not isinstance(sub_categories, dict):
+            return config
+
+        current_by_code = {
+            str(item.get("code")).zfill(2): key
+            for key, item in sub_categories.items()
+            if isinstance(item, dict) and item.get("code") is not None
+        }
+        current_by_name = {
+            str(item.get("name")): key
+            for key, item in sub_categories.items()
+            if isinstance(item, dict) and item.get("name")
+        }
+
+        migrated_orders: Dict[str, List[str]] = {}
+        previous_orders = previous_config.get("sub_category_orders") or {}
+        for order_key, order in orders.items():
+            if not isinstance(order, list):
+                migrated_orders[order_key] = order
+                continue
+
+            migrated: List[str] = []
+            for value in order:
+                value = str(value)
+                if value in sub_categories:
+                    target_key = value
+                elif value in current_by_name:
+                    target_key = current_by_name[value]
+                else:
+                    previous_item = previous_sub_categories.get(value) or {}
+                    previous_code = previous_item.get("code")
+                    target_key = (
+                        current_by_code.get(str(previous_code).zfill(2))
+                        if previous_code is not None
+                        else None
+                    )
+
+                if target_key and target_key not in migrated:
+                    migrated.append(target_key)
+
+            # 如果管理员删除旧三级项后新增了相同编码的新三级项，
+            # 当前适用项文本中已经没有旧 key，仍要根据旧规则补回新 key。
+            previous_order = previous_orders.get(order_key) or []
+            if isinstance(previous_order, list):
+                for previous_key in previous_order:
+                    if previous_key in sub_categories:
+                        continue
+                    previous_item = previous_sub_categories.get(previous_key) or {}
+                    previous_code = previous_item.get("code")
+                    replacement_key = (
+                        current_by_code.get(str(previous_code).zfill(2))
+                        if previous_code is not None
+                        else None
+                    )
+                    if replacement_key and replacement_key not in migrated:
+                        migrated.append(replacement_key)
+            migrated_orders[order_key] = migrated
+
+        config["sub_category_orders"] = migrated_orders
+        return config
 
     @classmethod
     def activate_rule(cls, rule_id: int, user_id=None) -> VisirayPartNumberRule:
@@ -236,6 +316,34 @@ class PartNumberRuleService:
         code_length = int(config.get("code_length") or total_length)
         if total_length != code_length:
             raise ValueError(f"编码段长度合计为{total_length}，与规则总长度{code_length}不一致")
+
+        sub_categories = config.get("sub_categories")
+        if sub_categories is not None:
+            if not isinstance(sub_categories, dict):
+                raise ValueError("三级编码必须是对象")
+
+            seen_codes = set()
+            for key, item in sub_categories.items():
+                if not isinstance(item, dict):
+                    raise ValueError(f"三级编码 {key} 配置无效")
+                code = str(item.get("code") or "")
+                if not code.isdigit() or len(code) != 2:
+                    raise ValueError(f"三级编码 {item.get('name') or key} 必须是两位数字")
+                if code in seen_codes:
+                    raise ValueError(f"三级编码不能重复：{code}")
+                seen_codes.add(code)
+
+            orders = config.get("sub_category_orders") or {}
+            if not isinstance(orders, dict):
+                raise ValueError("三级适用项必须是对象")
+            for order_key, order in orders.items():
+                if not isinstance(order, list):
+                    raise ValueError(f"三级适用项 {order_key} 必须是数组")
+                missing_keys = [item for item in order if item not in sub_categories]
+                if missing_keys:
+                    raise ValueError(
+                        f"三级适用项 {order_key} 引用了不存在的三级编码：{', '.join(missing_keys)}"
+                    )
         return True, "规则有效"
 
     @classmethod

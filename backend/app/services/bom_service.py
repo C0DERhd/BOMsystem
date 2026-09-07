@@ -673,7 +673,8 @@ class BOMService:
                 'items': [],
             }
 
-        used_item_numbers: Dict[str, Set[str]] = {}
+        # Sub-BOMs and parts have independent item-number sequences.
+        used_item_numbers: Dict[Tuple[str, str], Set[str]] = {}
         for row in structure_rows:
             child_code = row['bom_code']
             parent_code = row.get('parent_code')
@@ -685,9 +686,10 @@ class BOMService:
 
             item_no = row.get('item_no') or str(len(parent_def['items']) + 1)
             item_key = str(item_no)
-            if item_key in used_item_numbers.setdefault(parent_code, set()):
+            number_key = (parent_code, 'sub_bom')
+            if item_key in used_item_numbers.setdefault(number_key, set()):
                 add_error(row['sheet'], row['row'], f"BOM {parent_code} 下序号 {item_key} 重复")
-            used_item_numbers[parent_code].add(item_key)
+            used_item_numbers[number_key].add(item_key)
             parent_def['items'].append({
                 'sheet': row['sheet'],
                 'row': row['row'],
@@ -710,15 +712,14 @@ class BOMService:
                 add_error(row['sheet'], row['row'], f"明细所属BOM {bom_code} 不在BOM结构表中")
                 continue
 
+            item_type = 'sub_bom' if row.get('item_code') in bom_defs else 'part'
+            row['item_type'] = item_type
             item_key = str(row['item_no'])
-            if item_key in used_item_numbers.setdefault(bom_code, set()):
+            number_key = (bom_code, item_type)
+            if item_key in used_item_numbers.setdefault(number_key, set()):
                 add_error(row['sheet'], row['row'], f"BOM {bom_code} 下序号 {item_key} 重复")
-            used_item_numbers[bom_code].add(item_key)
+            used_item_numbers[number_key].add(item_key)
 
-            if row.get('item_code') in bom_defs:
-                row['item_type'] = 'sub_bom'
-            else:
-                row['item_type'] = 'part'
             current['items'].append(row)
 
         # BOM明细中的类别是当前业务分类，不能再根据老零件号反推。
@@ -1978,7 +1979,7 @@ class BOMService:
             return material.id
 
         material = Material(
-            material_code=BOMService._generate_part_material_code(),
+            material_code=BOMService._generate_part_material_code(part),
             visiray_part_id=part.part_id,
             material_name=part.part_name or part.sub_type or part.part_id,
             specification=' / '.join(filter(None, [part.category, part.main_type, part.sub_type])),
@@ -2026,7 +2027,22 @@ class BOMService:
         return candidates[0] if candidates else None
 
     @staticmethod
-    def _generate_part_material_code() -> str:
+    def _generate_part_material_code(part: Optional[VisirayPartNumber] = None) -> str:
+        if part is not None:
+            raw = str(part.part_id or '').strip()
+            prefix = ''
+            try:
+                from app.services.part_number_rule_service import PartNumberRuleService
+                prefix = PartNumberRuleService.get_active_rule().prefix or ''
+            except Exception:
+                pass
+            if prefix and raw.startswith(prefix):
+                raw = raw[len(prefix):]
+            else:
+                raw = re.sub(r'^[A-Za-z]+', '', raw)
+            if raw.isdigit() and len(raw) == 12 and not Material.query.filter_by(material_code=raw).first():
+                return raw
+
         for classification in range(0, 100):
             code = MaterialCodeService.generate_material_code(
                 part_type='custom',
@@ -2037,7 +2053,7 @@ class BOMService:
             )
             if not Material.query.filter_by(material_code=code).first():
                 return code
-        raise ValueError("Unable to generate material code for part number")
+        raise ValueError("零件号对应的库存物料编码已存在，且历史物料备用编码已用完")
 
     @staticmethod
     def _part_material_marker(part_id: str) -> str:

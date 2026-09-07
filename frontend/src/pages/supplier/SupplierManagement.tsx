@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Card, Empty, Form, Input, Modal, Space, Table, Tag, Typography, message } from 'antd';
-import { EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 
 import authService from '@/services/auth';
 import api from '@/services/api';
@@ -29,6 +29,7 @@ const SupplierManagement: React.FC = () => {
   const [searchKeyword, setSearchKeyword] = useState('');
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
   const [isModalVisible, setIsModalVisible] = useState(false);
+  const [editingSupplier, setEditingSupplier] = useState<SupplierInfo | null>(null);
   const [form] = Form.useForm();
   const [modalApi, modalContextHolder] = Modal.useModal();
   const isAdmin = authService.isAdmin();
@@ -71,7 +72,24 @@ const SupplierManagement: React.FC = () => {
   }, []);
 
   const showCreateModal = () => {
+    setEditingSupplier(null);
     form.resetFields();
+    setIsModalVisible(true);
+  };
+
+  const showEditModal = (record: SupplierInfo) => {
+    setEditingSupplier(record);
+    form.setFieldsValue({
+      supplier_code: record.supplier_code,
+      supplier_name: record.supplier_name || '',
+      phone: record.phone || '',
+      email: record.email || '',
+      address: record.address || '',
+      contact_person: record.contact_person || '',
+      position: record.position || '',
+      coordinator: record.liaison || '',
+      remarks: record.remark || '',
+    });
     setIsModalVisible(true);
   };
 
@@ -97,24 +115,52 @@ const SupplierManagement: React.FC = () => {
     });
   };
 
-  const handleCreate = async () => {
+  const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
       setLoading(true);
-      const response = await api.post('/visiray/suppliers', values);
+      const response = editingSupplier
+        ? await api.put(`/visiray/suppliers/${encodeURIComponent(editingSupplier.supplier_code)}`, {
+            ...values,
+            source: editingSupplier.source,
+          })
+        : await api.post('/visiray/suppliers', values);
 
       if (response.data.success) {
-        message.success(response.data.message || '供应商信息创建成功');
+        message.success(response.data.message || (editingSupplier ? '供应商信息更新成功' : '供应商信息创建成功'));
         setIsModalVisible(false);
+        setEditingSupplier(null);
         form.resetFields();
-        fetchSupplierData(1, searchKeyword);
+        fetchSupplierData(editingSupplier ? pagination.current : 1, searchKeyword);
       } else {
-        message.error(response.data.message || '创建供应商信息失败');
+        message.error(response.data.message || (editingSupplier ? '更新供应商信息失败' : '创建供应商信息失败'));
       }
     } catch (error: any) {
       if (!error?.errorFields) {
-        message.error(getErrorMessage(error, '创建供应商信息失败'));
+        message.error(getErrorMessage(error, editingSupplier ? '更新供应商信息失败' : '创建供应商信息失败'));
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async (record: SupplierInfo) => {
+    try {
+      setLoading(true);
+      const response = await api.delete(`/visiray/suppliers/${encodeURIComponent(record.supplier_code)}`, {
+        params: { source: record.source },
+      });
+      if (response.data.success) {
+        message.success(response.data.message || '供应商删除成功');
+        const nextPage = dataSource.length === 1 && pagination.current > 1
+          ? pagination.current - 1
+          : pagination.current;
+        fetchSupplierData(nextPage, searchKeyword);
+      } else {
+        message.error(response.data.message || '删除供应商失败');
+      }
+    } catch (error: any) {
+      message.error(getErrorMessage(error, '删除供应商失败'));
     } finally {
       setLoading(false);
     }
@@ -147,6 +193,30 @@ const SupplierManagement: React.FC = () => {
         </Button>
       ),
     },
+    ...(isAdmin ? [{
+      title: '管理操作',
+      key: 'management',
+      fixed: 'right' as const,
+      width: 180,
+      render: (_: unknown, record: SupplierInfo) => (
+        <Space size={4}>
+          <Button type="link" icon={<EditOutlined />} onClick={() => showEditModal(record)} style={{ padding: 0 }}>
+            编辑
+          </Button>
+          <Popconfirm
+            title="确定删除这个供应商吗？"
+            description="删除后不能恢复；已有报价关联的正式供应商无法删除。"
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => handleDelete(record)}
+          >
+            <Button danger type="link" icon={<DeleteOutlined />} style={{ padding: 0 }}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    }] : []),
   ];
 
   return (
@@ -192,11 +262,12 @@ const SupplierManagement: React.FC = () => {
       />
 
       <Modal
-        title="新增供应商"
+        title={editingSupplier ? '编辑供应商' : '新增供应商'}
         open={isModalVisible}
-        onOk={handleCreate}
+        onOk={handleSubmit}
         onCancel={() => {
           setIsModalVisible(false);
+          setEditingSupplier(null);
           form.resetFields();
         }}
         confirmLoading={loading}
@@ -205,10 +276,10 @@ const SupplierManagement: React.FC = () => {
       >
         <Form form={form} layout="vertical">
           <Form.Item name="supplier_code" label="供应商编号" rules={[{ required: true, message: '请输入供应商编号' }]}>
-            <Input placeholder="请输入供应商编号" />
+            <Input placeholder="请输入供应商编号" disabled={!!editingSupplier} />
           </Form.Item>
           <Form.Item name="supplier_name" label="供应商名称" rules={[{ required: true, message: '请输入供应商名称' }]}>
-            <Input placeholder="请输入供应商名称" />
+            <Input placeholder="请输入供应商名称" disabled={!!editingSupplier} />
           </Form.Item>
           <Form.Item name="phone" label="联系电话">
             <Input placeholder="请输入联系电话" />

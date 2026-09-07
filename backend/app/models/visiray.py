@@ -321,6 +321,7 @@ class VisirayPartNumber(db.Model):
     part_name = db.Column(db.String(200))
     unit = db.Column(db.String(20))
     standard_cost = db.Column(db.Numeric(12, 4), default=0.0000)
+    remark = db.Column(db.String(500), comment='备注')
     current_version_id = db.Column(db.BigInteger, comment='当前默认版本ID')
     created_by = db.Column(db.BigInteger)
     created_by_name = db.Column(db.String(200))
@@ -336,6 +337,7 @@ class VisirayPartNumber(db.Model):
             'part_name': self.part_name,
             'unit': self.unit,
             'standard_cost': float(self.standard_cost) if self.standard_cost else 0,
+            'remark': self.remark,
             'current_version_id': self.current_version_id,
             'created_by': self.created_by,
             'created_by_name': self.created_by_name,

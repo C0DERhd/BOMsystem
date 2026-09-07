@@ -14,6 +14,7 @@ interface PartNumberRecord {
   part_name?: string;
   unit?: string;
   standard_cost?: number;
+  remark?: string;
   created_by?: number;
   created_by_name?: string | null;
   editable?: boolean;
@@ -157,20 +158,46 @@ const PartNumberApplicationPage: React.FC = () => {
   const getSubCategoryOrder = (pc: string | null, mc: string | null) => {
     if (!pc || !mc) return [] as string[];
     const configuredOrders = activeRuleConfig?.sub_category_orders || {};
-    return configuredOrders[`${mc}.${pc}`]
-      || configuredOrders[mc]
-      || defaultSubCategoryOrders[`${mc}.${pc}`]
-      || defaultSubCategoryOrders[mc]
-      || [];
+    const scopedKey = `${mc}.${pc}`;
+    const rawOrder = Object.prototype.hasOwnProperty.call(configuredOrders, scopedKey)
+      ? configuredOrders[scopedKey]
+      : Object.prototype.hasOwnProperty.call(configuredOrders, mc)
+        ? configuredOrders[mc]
+        : null;
+    if (Array.isArray(rawOrder)) {
+      const subCategories = activeRuleConfig?.sub_categories || {};
+      return rawOrder
+        .map((value: string) => subCategories[value] ? value : '')
+        .filter(Boolean);
+    }
+
+    // 当前规则没有单独配置适用项时，使用当前规则里现有的三级编码。
+    // 不能回退到旧的前端固定列表，否则管理员删除或改名后申请页仍显示旧选项。
+    if (activeRuleConfig) {
+      return Object.entries(activeRuleConfig.sub_categories || {})
+        .sort(([, left]: [string, any], [, right]: [string, any]) =>
+          Number(left?.code || 0) - Number(right?.code || 0)
+        )
+        .map(([key]) => key);
+    }
+
+    return defaultSubCategoryOrders[scopedKey] || defaultSubCategoryOrders[mc] || [];
   };
 
   const getConfiguredSubCategoryOptions = (pc: string | null, mc: string | null) => {
     if (!pc || !mc) return [] as { value: string; label: string }[];
     const values = getSubCategoryOrder(pc, mc);
-    return values.map((value: string) => ({
-      value,
-      label: activeRuleConfig?.sub_categories?.[value]?.name || subCategoryMapping[value] || value,
-    }));
+    const subCategories = activeRuleConfig?.sub_categories || {};
+    return values
+      .map((value: string) => {
+        const configuredItem = subCategories[value];
+        if (!configuredItem && activeRuleConfig) return null;
+        return {
+          value,
+          label: configuredItem?.name || subCategoryMapping[value] || value,
+        };
+      })
+      .filter(Boolean) as { value: string; label: string }[];
   };
 
   const getPartCategoryByCode = (code: string, field: 'code' | 'identifier' = 'code') => {
@@ -412,7 +439,8 @@ const PartNumberApplicationPage: React.FC = () => {
     setEditVisible(true);
     editForm.setFieldsValue({
       part_name: record.part_name || '',
-      unit: record.unit || 'pcs'
+      unit: record.unit || 'pcs',
+      remark: record.remark || ''
     });
   };
   const submitEditName = async () => {
@@ -422,7 +450,8 @@ const PartNumberApplicationPage: React.FC = () => {
       setEditLoading(true);
       const res = await api.patch(`/visiray/part-number/${ensurePrefix(editRecord.part_id)}`, {
         part_name: values.part_name,
-        unit: values.unit
+        unit: values.unit,
+        remark: values.remark || ''
       });
       if (res.data.success) {
         message.success('更新成功');
@@ -602,6 +631,12 @@ const PartNumberApplicationPage: React.FC = () => {
     }
   };
 
+  const refreshRuleWhenPageActive = () => {
+    if (document.visibilityState === 'visible') {
+      fetchActivePartNumberRule();
+    }
+  };
+
   // 清空零件号列表
   // const clearPartNumberList = () => {
   //   setPartNumberList([]);
@@ -663,6 +698,13 @@ const PartNumberApplicationPage: React.FC = () => {
     
     fetchActivePartNumberRule();
     fetchPartNumbers(1, partNumberPagination.pageSize);
+
+    window.addEventListener('focus', fetchActivePartNumberRule);
+    document.addEventListener('visibilitychange', refreshRuleWhenPageActive);
+    return () => {
+      window.removeEventListener('focus', fetchActivePartNumberRule);
+      document.removeEventListener('visibilitychange', refreshRuleWhenPageActive);
+    };
   }, []); // 空依赖数组，只在组件挂载时执行一次
 
   // 状态变化时，同步更新表单字段
@@ -722,6 +764,13 @@ const PartNumberApplicationPage: React.FC = () => {
       render: (text: string) => text || 'pcs'
     },
     {
+      title: '备注',
+      dataIndex: 'remark',
+      key: 'remark',
+      ellipsis: true,
+      render: (text: string) => text || '-'
+    },
+    {
       title: '一级大类',
       dataIndex: 'category',
       key: 'category',
@@ -753,7 +802,7 @@ const PartNumberApplicationPage: React.FC = () => {
       key: 'action',
       render: (_: any, record: PartNumberRecord) => (
         <Space>
-          <Button type="link" disabled={!record.editable} onClick={() => handleEditName(record)}>编辑名称</Button>
+          <Button type="link" disabled={!record.editable} onClick={() => handleEditName(record)}>编辑</Button>
         </Space>
       )
     }
@@ -987,7 +1036,7 @@ const PartNumberApplicationPage: React.FC = () => {
         </Modal>
         <Modal
           open={editVisible}
-          title="编辑零件名称"
+          title="编辑零件信息"
           onCancel={() => setEditVisible(false)}
           onOk={submitEditName}
           confirmLoading={editLoading}
@@ -999,6 +1048,9 @@ const PartNumberApplicationPage: React.FC = () => {
             </Form.Item>
             <Form.Item name="unit" label="单位">
               <Input placeholder="pcs" />
+            </Form.Item>
+            <Form.Item name="remark" label="备注">
+              <Input.TextArea rows={3} maxLength={500} showCount placeholder="请输入备注" />
             </Form.Item>
           </Form>
         </Modal>

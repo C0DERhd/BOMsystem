@@ -116,6 +116,8 @@ const BOMDetail: React.FC = () => {
     try {
       const response = await api.get(`/bom/${id}/shortage`, {
         params: { quantity: queryQuantity },
+        // 缺料清单需要递归展开子 BOM 并查询库存，允许更长的服务端计算时间。
+        timeout: 30000,
       });
       setShortageReport(response.data.data);
       setShortageQuantity(response.data.data?.production_quantity || queryQuantity);

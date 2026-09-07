@@ -54,14 +54,6 @@ def get_bom(bom_id):
                 'message': 'BOM不存在'
             }), 404
         
-        try:
-            bom.calculate_cost()
-            BOMService._recalculate_referencing_boms(bom.id)
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            current_app.logger.warning(f"Recalculate BOM cost failed while loading BOM {bom_id}: {e}")
-
         return jsonify({
             'success': True,
             'data': bom.to_dict(include_items=True, include_tree=True)
@@ -351,14 +343,12 @@ def update_bom_item_supplier(bom_id, item_id):
             }), 400
 
         item = BOMService.update_item_supplier(bom_id, item_id, safe_int(supplier_price_id))
-        bom = BOM.query.get(bom_id)
 
         return jsonify({
             'success': True,
             'message': '供应商已切换，BOM成本已重新计算',
             'data': {
                 'item': item.to_dict(),
-                'bom': bom.to_dict(include_items=True, include_tree=True) if bom else None
             }
         })
     except ValueError as e:
@@ -386,14 +376,12 @@ def update_bom_item_version(bom_id, item_id):
             item_id,
             safe_int(data.get('part_version_id')),
         )
-        bom = BOM.query.get(bom_id)
 
         return jsonify({
             'success': True,
             'message': '零件版本已切换，报价已重新匹配',
             'data': {
                 'item': item.to_dict(),
-                'bom': bom.to_dict(include_items=True, include_tree=True) if bom else None
             }
         })
     except ValueError as e:
@@ -419,7 +407,8 @@ def upgrade_bom(bom_id):
         return jsonify({
             'success': True,
             'message': 'BOM版本升级成功',
-            'data': upgraded_bom.to_dict(include_items=True, include_tree=True)
+            # 升级已完成，前端只需要新 BOM 的 ID 即可跳转；避免在此重复生成整棵详情树。
+            'data': upgraded_bom.to_dict()
         }), 201
 
     except ValueError as e:

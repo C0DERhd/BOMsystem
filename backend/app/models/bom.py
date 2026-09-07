@@ -5,6 +5,7 @@ import re
 from app import db
 from app.models.material import MaterialSupplier
 from app.models.visiray import VisirayPartNumber, VisirayPartNumberVersion
+from sqlalchemy.orm import joinedload
 
 def utc_isoformat(value):
     if not value:
@@ -95,7 +96,92 @@ class BOM(db.Model):
     def is_cost_excluded(self):
         return self.is_deleted or self.status in {'inactive', 'obsolete'}
     
-    def get_tree_structure(self, level=0, visited=None):
+    def _build_detail_context(self):
+        """Bulk-load everything needed to serialize this BOM and its sub-BOM tree."""
+        items_by_bom = {}
+        pending_bom_ids = {self.id}
+        loaded_bom_ids = set()
+
+        while pending_bom_ids:
+            batch_ids = pending_bom_ids - loaded_bom_ids
+            if not batch_ids:
+                break
+            loaded_bom_ids.update(batch_ids)
+            batch_items = (
+                BOMItem.query
+                .options(
+                    joinedload(BOMItem.material),
+                    joinedload(BOMItem.sub_bom),
+                    joinedload(BOMItem.selected_supplier).joinedload(MaterialSupplier.supplier),
+                )
+                .filter(BOMItem.bom_id.in_(batch_ids))
+                .order_by(BOMItem.bom_id, BOMItem.level, BOMItem.sort_order, BOMItem.id)
+                .all()
+            )
+            for item in batch_items:
+                items_by_bom.setdefault(item.bom_id, []).append(item)
+                if item.sub_bom_id and item.sub_bom and not item.sub_bom.is_deleted:
+                    pending_bom_ids.add(item.sub_bom_id)
+
+        all_items = [item for items in items_by_bom.values() for item in items]
+        material_ids = {item.material_id for item in all_items if item.material_id}
+        part_ids = {
+            item._display_material_code()
+            for item in all_items
+            if item.material_id and item._display_material_code()
+        }
+
+        suppliers_by_material = {}
+        if material_ids:
+            supplier_rows = (
+                MaterialSupplier.query
+                .options(joinedload(MaterialSupplier.supplier))
+                .filter(
+                    MaterialSupplier.material_id.in_(material_ids),
+                    MaterialSupplier.status == 'active',
+                )
+                .order_by(
+                    MaterialSupplier.material_id,
+                    MaterialSupplier.is_primary.desc(),
+                    MaterialSupplier.id,
+                )
+                .all()
+            )
+            for supplier in supplier_rows:
+                suppliers_by_material.setdefault(supplier.material_id, []).append(supplier)
+
+        versions_by_part = {}
+        versions_by_id = {}
+        if part_ids:
+            version_rows = (
+                VisirayPartNumberVersion.query
+                .filter(VisirayPartNumberVersion.part_id.in_(part_ids))
+                .order_by(
+                    VisirayPartNumberVersion.part_id,
+                    VisirayPartNumberVersion.is_current.desc(),
+                    VisirayPartNumberVersion.version_no.desc(),
+                )
+                .all()
+            )
+            for version in version_rows:
+                versions_by_part.setdefault(version.part_id, []).append(version)
+                versions_by_id[version.id] = version
+
+        children_by_parent = {}
+        for item in all_items:
+            children_by_parent.setdefault(item.parent_item_id, []).append(item)
+
+        return {
+            'items_by_bom': items_by_bom,
+            'children_by_parent': children_by_parent,
+            'suppliers_by_material': suppliers_by_material,
+            'versions_by_part': versions_by_part,
+            'versions_by_id': versions_by_id,
+            'item_data': {},
+            'item_costs': {},
+        }
+
+    def get_tree_structure(self, level=0, visited=None, context=None):
         """Return BOM items as a parent/child tree."""
         if self.is_deleted:
             return []
@@ -104,7 +190,8 @@ class BOM(db.Model):
             return []
         visited.add(self.id)
 
-        all_items = self.bom_items.order_by('level', 'sort_order', 'id').all()
+        context = context or self._build_detail_context()
+        all_items = context['items_by_bom'].get(self.id, [])
         children_by_parent = {}
         for item in all_items:
             children_by_parent.setdefault(item.parent_item_id, []).append(item)
@@ -112,10 +199,12 @@ class BOM(db.Model):
         def build_nodes(parent_item_id=None):
             nodes = []
             for item in children_by_parent.get(parent_item_id, []):
-                item_data = item.to_dict()
+                item_data = dict(item.to_dict(context))
                 item_data['children'] = build_nodes(item.id)
                 if item.sub_bom and not item_data['children']:
-                    item_data['children'] = item.sub_bom.get_tree_structure(level + 1, visited.copy())
+                    item_data['children'] = item.sub_bom.get_tree_structure(
+                        level + 1, visited.copy(), context
+                    )
                 nodes.append(item_data)
             return nodes
 
@@ -204,11 +293,14 @@ class BOM(db.Model):
             'updated_at': utc_isoformat(self.updated_at),
         }
         
+        detail_context = self._build_detail_context() if include_items or include_tree else None
+
         if include_items:
             items = []
-            for item in self.bom_items.order_by('sort_order'):
+            direct_items = detail_context['items_by_bom'].get(self.id, [])
+            for item in sorted(direct_items, key=lambda row: ((row.sort_order or 0), row.id or 0)):
                 try:
-                    items.append(item.to_dict())
+                    items.append(dict(item.to_dict(detail_context)))
                 except Exception as e:
                     items.append({
                         'id': item.id,
@@ -229,7 +321,7 @@ class BOM(db.Model):
             data['items'] = items
         
         if include_tree:
-            data['tree_structure'] = self.get_tree_structure()
+            data['tree_structure'] = self.get_tree_structure(context=detail_context)
             
         return data
 
@@ -368,28 +460,87 @@ class BOMItem(db.Model):
             for item in versions
         ]
 
-    def to_dict(self):
+    def _context_supplier_options(self, context):
+        suppliers = context['suppliers_by_material'].get(self.material_id, [])
+        if self.part_version_id:
+            exact = [row for row in suppliers if row.part_version_id == self.part_version_id]
+            generic = [row for row in suppliers if row.part_version_id is None]
+            return exact + generic
+        return [row for row in suppliers if row.part_version_id is None]
+
+    def _context_item_cost(self, context):
+        cached = context['item_costs'].get(self.id)
+        if cached is not None:
+            return cached
+
+        quantity = self._to_float(self.quantity)
+        usage_rate = self._to_float(self.usage_rate or 1)
+        own_cost = 0.0
+        if self.material_id:
+            if self.selected_supplier_price is not None:
+                price = self._to_float(self.selected_supplier_price)
+            elif self.selected_supplier and self.selected_supplier.status == 'active':
+                price = self._to_float(self.selected_supplier.price)
+            else:
+                options = self._context_supplier_options(context)
+                price = self._to_float(options[0].price) if options else 0.0
+            own_cost = quantity * price * usage_rate
+        elif self.sub_bom and not self.sub_bom.is_cost_excluded():
+            own_cost = quantity * self._to_float(self.sub_bom.total_cost) * usage_rate
+
+        child_cost = sum(
+            child._context_item_cost(context)
+            for child in context['children_by_parent'].get(self.id, [])
+        )
+        total = own_cost + self._to_float(self.quantity or 1) * child_cost
+        context['item_costs'][self.id] = total
+        return total
+
+    def to_dict(self, context=None):
         def to_float(value, default=0):
             if value is None:
                 return default
             return float(value)
 
-        version = None
-        if self.part_version_id:
+        if context is not None and self.id in context['item_data']:
+            return context['item_data'][self.id]
+
+        version = context['versions_by_id'].get(self.part_version_id) if context else None
+        if context is None and self.part_version_id:
             try:
                 version = VisirayPartNumberVersion.query.get(self.part_version_id)
             except Exception:
                 version = None
 
-        supplier_options = []
+        supplier_rows = []
         try:
-            supplier_options = self.get_supplier_options()
+            supplier_rows = (
+                self._context_supplier_options(context)
+                if context is not None else self.get_supplier_options()
+            )
         except Exception:
-            supplier_options = []
+            supplier_rows = []
+        supplier_options = [
+            supplier if isinstance(supplier, dict) else supplier.to_dict()
+            for supplier in supplier_rows
+        ]
 
         version_options = []
         try:
-            version_options = self._part_version_options()
+            if context is not None:
+                version_options = [
+                    {
+                        'id': item.id,
+                        'part_id': item.part_id,
+                        'version_no': item.version_no,
+                        'version_number': item.version_no,
+                        'status': item.status or 'active',
+                        'is_current': bool(item.is_current),
+                    }
+                    for item in context['versions_by_part'].get(self._display_material_code(), [])
+                ]
+            else:
+                version_options = self._part_version_options()
         except Exception:
             version_options = []
 
@@ -401,16 +552,26 @@ class BOMItem(db.Model):
             selected_supplier_name = None
 
         try:
-            selected_supplier_price = to_float(self.get_unit_price())
+            if context is not None:
+                if self.selected_supplier_price is not None:
+                    selected_supplier_price = to_float(self.selected_supplier_price)
+                elif self.selected_supplier and self.selected_supplier.status == 'active':
+                    selected_supplier_price = to_float(self.selected_supplier.price)
+                else:
+                    selected_supplier_price = to_float(supplier_rows[0].price) if supplier_rows else 0
+            else:
+                selected_supplier_price = to_float(self.get_unit_price())
         except Exception:
             selected_supplier_price = 0
 
         try:
-            item_cost = float(self.get_item_cost())
+            item_cost = float(
+                self._context_item_cost(context) if context is not None else self.get_item_cost()
+            )
         except Exception:
             item_cost = 0
 
-        return {
+        data = {
             'id': self.id,
             'bom_id': self.bom_id,
             'item_type': 'part' if self.material_id else ('sub_bom' if self.sub_bom_id else None),
@@ -450,6 +611,9 @@ class BOMItem(db.Model):
             'is_active': self.is_active,
             'item_cost': item_cost
         }
+        if context is not None:
+            context['item_data'][self.id] = data
+        return data
 
 class BOMVersion(db.Model):
     """BOM版本模型"""
