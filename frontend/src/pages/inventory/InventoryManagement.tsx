@@ -29,6 +29,12 @@ const { Title } = Typography;
 const { Option } = Select;
 
 const detailLabelStyle = { width: 120 };
+const goodsTypeLabels: Record<string, string> = {
+  optical: '光学件',
+  mechanical: '机械件',
+  electrical: '电气/子件',
+};
+const getGoodsTypeLabel = (value?: string) => value ? goodsTypeLabels[value] || value : '-';
 const getDisplayPartId = (record: any) => record?.display_goods_id || record?.part_id || record?.goods_id || '-';
 const getRecordList = (value: any) => String(value || '')
   .split(/[;,；，]/)
@@ -147,7 +153,7 @@ const InventoryManagement: React.FC = () => {
           <p><strong>零件名称:</strong> {record.goods_name}</p>
           <p><strong>供应商:</strong> {record.supplier}</p>
           <p><strong>商品型号:</strong> {record.product_model}</p>
-          <p><strong>货品类型:</strong> {record.goods_type}</p>
+          <p><strong>货品类型:</strong> {getGoodsTypeLabel(record.goods_type)}</p>
           <p><strong>入库数量:</strong> {record.in_quantity}</p>
           <p><strong>出库数量:</strong> {record.out_quantity}</p>
           <p><strong>库存数量:</strong> {record.stock_quantity}</p>
@@ -183,10 +189,10 @@ const InventoryManagement: React.FC = () => {
             <Descriptions.Item label="零件号">{getDisplayPartId(record)}</Descriptions.Item>
             <Descriptions.Item label="供应商">{record.supplier_name || record.supplier || '-'}</Descriptions.Item>
             <Descriptions.Item label="数量">{record.quantity} {record.unit || ''}</Descriptions.Item>
-            <Descriptions.Item label="入库日期">{record.in_date || '-'}</Descriptions.Item>
+            <Descriptions.Item label="入库日期">{record.in_date ? record.in_date.slice(0, 10) : '-'}</Descriptions.Item>
             <Descriptions.Item label="入库人">{record.operator || '-'}</Descriptions.Item>
             <Descriptions.Item label="货架">{record.shelf_location || '-'}</Descriptions.Item>
-            <Descriptions.Item label="货品类型">{record.goods_type || '-'}</Descriptions.Item>
+            <Descriptions.Item label="货品类型">{getGoodsTypeLabel(record.goods_type)}</Descriptions.Item>
             <Descriptions.Item label="商品型号">{record.product_model || '-'}</Descriptions.Item>
             <Descriptions.Item label="入库类型">{record.inbound_type || '-'}</Descriptions.Item>
             <Descriptions.Item label="关联采购单" span={2}>{record.related_voucher || '-'}</Descriptions.Item>
@@ -272,7 +278,7 @@ const InventoryManagement: React.FC = () => {
             <p><strong>供应商:</strong> {record.supplier_name || record.supplier || '-'}</p>
             <p><strong>数量:</strong> {record.quantity}</p>
             <p><strong>单位:</strong> {record.unit}</p>
-            <p><strong>入库日期:</strong> {record.in_date}</p>
+            <p><strong>入库日期:</strong> {record.in_date ? record.in_date.slice(0, 10) : '-'}</p>
             <p><strong>入库人:</strong> {record.operator}</p>
             <p><strong>货架:</strong> {record.shelf_location}</p>
             <p><strong>关联采购单:</strong> {record.related_voucher || '-'}</p>
@@ -303,7 +309,7 @@ const InventoryManagement: React.FC = () => {
             <p><strong>零件号:</strong> {getDisplayPartId(record)}</p>
             <p><strong>零件名称:</strong> {record.goods_name}</p>
             <p><strong>数量:</strong> {record.quantity}</p>
-            <p><strong>出库日期:</strong> {record.out_date}</p>
+            <p><strong>出库日期:</strong> {record.out_date ? record.out_date.slice(0, 10) : '-'}</p>
             <p><strong>出库人:</strong> {record.operator}</p>
             <p><strong>货架:</strong> {record.shelf_location}</p>
             <p><strong>出库类型:</strong> {record.outbound_type}</p>
@@ -459,7 +465,7 @@ const InventoryManagement: React.FC = () => {
     { title: '零件名称', dataIndex: 'goods_name', key: 'goods_name' },
     { title: '供应商', dataIndex: 'supplier', key: 'supplier' },
     { title: '商品型号', dataIndex: 'product_model', key: 'product_model' },
-    { title: '货品类型', dataIndex: 'goods_type', key: 'goods_type' },
+    { title: '货品类型', dataIndex: 'goods_type', key: 'goods_type', render: (value: string) => getGoodsTypeLabel(value) },
     { title: '入库数量', dataIndex: 'in_quantity', key: 'in_quantity' },
     { title: '出库数量', dataIndex: 'out_quantity', key: 'out_quantity' },
     { title: '库存数量', dataIndex: 'stock_quantity', key: 'stock_quantity' },

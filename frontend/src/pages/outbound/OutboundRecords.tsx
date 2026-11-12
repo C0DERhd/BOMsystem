@@ -1,11 +1,12 @@
 ﻿import React, { useEffect, useState } from 'react';
 import { AutoComplete, Button, Card, DatePicker, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Table, Typography } from 'antd';
-import { ApartmentOutlined, DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import api from '@/services/api';
 import dayjs from 'dayjs';
 import { useSelector } from 'react-redux';
 import { RootState } from '@/store';
 import authService from '@/services/auth';
+import { downloadFile } from '@/utils';
 
 const { Title } = Typography;
 const { RangePicker } = DatePicker;
@@ -41,6 +42,8 @@ const normalizeOutboundType = (value: any) => {
 const OutboundRecords: React.FC = () => {
   const [dataSource, setDataSource] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
@@ -61,6 +64,31 @@ const OutboundRecords: React.FC = () => {
   const [bomInvalidItems, setBomInvalidItems] = useState<any[]>([]);
 
   const getErrorMessage = (error: any, fallback: string) => error?.response?.data?.message || fallback;
+
+  const handleBatchExport = async () => {
+    try {
+      setExporting(true);
+      const response = await api.post(
+        '/visiray/outbound/export',
+        { record_ids: selectedRowKeys },
+        { responseType: 'blob', timeout: 60000 },
+      );
+      downloadFile(response.data, `批量出库单_${dayjs().format('YYYYMMDDHHmmss')}.xlsx`);
+      message.success(`已导出${selectedRowKeys.length}条出库记录`);
+    } catch (error: any) {
+      let errorMessage = getErrorMessage(error, '批量导出出库单失败');
+      if (error?.response?.data instanceof Blob) {
+        try {
+          errorMessage = JSON.parse(await error.response.data.text()).message || errorMessage;
+        } catch (_) {
+          errorMessage = '批量导出出库单失败';
+        }
+      }
+      message.error(errorMessage);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const showBomInvalidItems = (payload: any, fallback: string) => {
     const invalidItems = payload?.data?.invalid_items || [];
@@ -222,9 +250,6 @@ const OutboundRecords: React.FC = () => {
         values.out_date = values.out_date.format('YYYY-MM-DD');
       }
       values.outbound_type = normalizeOutboundType(values.outbound_type);
-      if (!editingOutRecordId) {
-        values.operator = user?.name || values.operator;
-      }
 
       setLoading(true);
       const response = editingOutRecordId
@@ -381,6 +406,7 @@ const OutboundRecords: React.FC = () => {
               <>
                 <Button icon={<ApartmentOutlined />} onClick={showBomOutboundModal}>按BOM出库</Button>
                 <Button type="primary" icon={<PlusOutlined />} onClick={showModal}>新增出库</Button>
+                <Button icon={<DownloadOutlined />} disabled={!selectedRowKeys.length} loading={exporting} onClick={handleBatchExport}>批量导出出库单</Button>
               </>
             )}
           </Space>
@@ -392,6 +418,11 @@ const OutboundRecords: React.FC = () => {
         columns={columns}
         loading={loading}
         rowKey="out_record_id"
+        rowSelection={authService.isAdmin() ? {
+          selectedRowKeys,
+          preserveSelectedRowKeys: true,
+          onChange: setSelectedRowKeys,
+        } : undefined}
         pagination={{
           current: pagination.current,
           pageSize: pagination.pageSize,
@@ -452,11 +483,13 @@ const OutboundRecords: React.FC = () => {
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
 
-          {editingOutRecordId && (
-            <Form.Item name="operator" label="出库人" rules={[{ required: true, message: '请输入出库人' }]}>
-              <Input placeholder="请输入出库人" />
-            </Form.Item>
-          )}
+          <Form.Item
+            name="operator"
+            label="出库人/备注"
+            rules={[{ required: true, whitespace: true, message: '请输入出库人/备注' }]}
+          >
+            <Input maxLength={50} placeholder="请输入出库人/备注" />
+          </Form.Item>
 
           <Form.Item name="shelf_location" label="货架" rules={[{ required: true, message: '请输入货架位置' }]}>
             <Input placeholder="请输入货架位置" />

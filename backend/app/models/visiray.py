@@ -108,7 +108,7 @@ class VisirayStockInRecord(db.Model):
     supplier_name = db.Column(db.String(200))
     quantity = db.Column(db.Integer)
     unit = db.Column(db.String(20))
-    in_date = db.Column(db.Date)
+    in_date = db.Column(db.DateTime)
     operator = db.Column(db.String(50))
     shelf_location = db.Column(db.String(50))
     goods_type = db.Column(db.String(100))
@@ -127,7 +127,7 @@ class VisirayStockInRecord(db.Model):
             'supplier_name': self.supplier_name,
             'quantity': self.quantity,
             'unit': self.unit,
-            'in_date': self.in_date.strftime('%Y-%m-%d') if self.in_date else None,
+            'in_date': self.in_date.strftime('%Y-%m-%d %H:%M:%S') if self.in_date else None,
             'operator': self.operator,
             'shelf_location': self.shelf_location,
             'goods_type': self.goods_type,

@@ -17,6 +17,7 @@ import {
 } from 'antd';
 import {
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   EyeOutlined,
   PlusOutlined,
@@ -25,9 +26,8 @@ import {
 } from '@ant-design/icons';
 import api from '@/services/api';
 import dayjs from 'dayjs';
-import { useSelector } from 'react-redux';
-import { RootState } from '@/store';
 import authService from '@/services/auth';
+import { downloadFile } from '@/utils';
 
 const { Title } = Typography;
 const { RangePicker } = DatePicker;
@@ -39,11 +39,11 @@ const SHOW_RECORD_DELETE_ACTIONS = false;
 const InboundRecords: React.FC = () => {
   const [dataSource, setDataSource] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
-  const { user } = useSelector((state: RootState) => state.auth);
-
   const [purchaseOrderOptions, setPurchaseOrderOptions] = useState<any[]>([]);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [form] = Form.useForm();
@@ -179,7 +179,7 @@ const InboundRecords: React.FC = () => {
       goods_id: getDisplayPartId(record),
       part_version_id: record.part_version_id,
       supplier_name: record.supplier_name || record.supplier,
-      in_date: record.in_date ? dayjs(record.in_date, 'YYYY-MM-DD') : null,
+      in_date: record.in_date ? dayjs(record.in_date) : null,
       inbound_type: '入库',
     });
     fetchPurchaseOrderOptions();
@@ -199,7 +199,7 @@ const InboundRecords: React.FC = () => {
           <p><strong>供应商:</strong> {record.supplier_name || record.supplier || '-'}</p>
           <p><strong>数量:</strong> {record.quantity}</p>
           <p><strong>单位:</strong> {record.unit}</p>
-          <p><strong>入库日期:</strong> {record.in_date}</p>
+          <p><strong>入库日期:</strong> {record.in_date ? record.in_date.slice(0, 10) : '-'}</p>
           <p><strong>入库人:</strong> {record.operator}</p>
           <p><strong>货架:</strong> {record.shelf_location}</p>
           <p><strong>关联采购单:</strong> {record.related_voucher || '-'}</p>
@@ -225,17 +225,41 @@ const InboundRecords: React.FC = () => {
     }
   };
 
+  const handleBatchExport = async () => {
+    try {
+      setExporting(true);
+      const response = await api.post(
+        '/visiray/inbound/export',
+        { record_ids: selectedRowKeys },
+        { responseType: 'blob', timeout: 60000 },
+      );
+      downloadFile(response.data, `批量入库单_${dayjs().format('YYYYMMDDHHmmss')}.xlsx`);
+      message.success(`已导出${selectedRowKeys.length}条入库记录`);
+    } catch (error: any) {
+      let errorMessage = getErrorMessage(error, '批量导出入库单失败');
+      if (error?.response?.data instanceof Blob) {
+        try {
+          errorMessage = JSON.parse(await error.response.data.text()).message || errorMessage;
+        } catch (_) {
+          errorMessage = '批量导出入库单失败';
+        }
+      }
+      message.error(errorMessage);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handleOk = async () => {
     try {
       const values = await form.validateFields();
       if (values.in_date) {
-        values.in_date = values.in_date.format('YYYY-MM-DD');
+        values.in_date = values.in_date.format('YYYY-MM-DD HH:mm:ss');
       }
       values.inbound_type = '入库';
       values.supplier = values.supplier_name;
       values.goods_name = form.getFieldValue('goods_name') || values.goods_name;
       if (!editingInRecord) {
-        values.operator = user?.name || values.operator;
         delete values.in_record;
       }
 
@@ -327,7 +351,12 @@ const InboundRecords: React.FC = () => {
               allowClear
             />
             <Button icon={<ReloadOutlined />} onClick={() => fetchInboundData(pagination.current, searchKeyword)}>刷新</Button>
-            {authService.isAdmin() && <Button type="primary" icon={<PlusOutlined />} onClick={showModal}>新增入库</Button>}
+            {authService.isAdmin() && (
+              <>
+                <Button type="primary" icon={<PlusOutlined />} onClick={showModal}>新增入库</Button>
+                <Button icon={<DownloadOutlined />} disabled={!selectedRowKeys.length} loading={exporting} onClick={handleBatchExport}>批量导出入库单</Button>
+              </>
+            )}
           </Space>
         </div>
       </div>
@@ -337,6 +366,11 @@ const InboundRecords: React.FC = () => {
         columns={columns}
         loading={loading}
         rowKey="in_record"
+        rowSelection={authService.isAdmin() ? {
+          selectedRowKeys,
+          preserveSelectedRowKeys: true,
+          onChange: setSelectedRowKeys,
+        } : undefined}
         pagination={{
           current: pagination.current,
           pageSize: pagination.pageSize,
@@ -445,14 +479,16 @@ const InboundRecords: React.FC = () => {
           </Form.Item>
 
           <Form.Item name="in_date" label="入库日期" rules={[{ required: true, message: '请选择入库日期' }]}>
-            <DatePicker style={{ width: '100%' }} />
+            <DatePicker showTime format="YYYY-MM-DD HH:mm:ss" style={{ width: '100%' }} />
           </Form.Item>
 
-          {editingInRecord && (
-            <Form.Item name="operator" label="入库人" rules={[{ required: true, message: '请输入入库人' }]}>
-              <Input placeholder="请输入入库人" />
-            </Form.Item>
-          )}
+          <Form.Item
+            name="operator"
+            label="采购人/备注"
+            rules={[{ required: true, whitespace: true, message: '请输入采购人/备注' }]}
+          >
+            <Input maxLength={50} placeholder="请输入采购人/备注" />
+          </Form.Item>
 
           <Form.Item name="shelf_location" label="货架" rules={[{ required: true, message: '请输入货架位置' }]}>
             <Input placeholder="请输入货架位置" />

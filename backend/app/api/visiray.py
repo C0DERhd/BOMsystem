@@ -25,6 +25,7 @@ from app import db
 from app.services.bom_service import BOMService
 from app.services.material_code_service import MaterialCodeService
 from app.services.part_number_rule_service import PartNumberRuleService
+from app.services.inventory_export_service import InventoryExportService
 from app.utils.helpers import generate_code, paginate_query
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask import send_file
@@ -531,7 +532,7 @@ def _supplier_price_to_dict(item):
         'version_is_current': bool(version.is_current) if version else False,
     }
 
-# 闄勪欢涓婁紶閰嶇疆
+# 附件上传配置
 ALLOWED_EXTENSIONS = {
     'pdf', 'doc', 'docx', 'xls', 'xlsx', 'png', 'jpg', 'jpeg', 'gif', 'txt', 'csv',
     'ppt', 'pptx', 'zip', 'rar', '7z'
@@ -610,14 +611,14 @@ def _require_admin():
 
 @bp.route('/visiray/inventory', methods=['GET'])
 def get_visiray_inventory():
-    """鑾峰彇Visiray搴撳瓨鏁版嵁"""
+    """获取 Visiray 库存数据"""
     try:
         query = VisirayInventory.query
 
         def get_filter_arg(name):
             return (request.args.get(name) or '').strip()
         
-        # 鎼滅储鏉′欢
+        # 搜索条件
         keyword = get_filter_arg('keyword')
         if keyword:
             search_term = f"%{keyword}%"
@@ -657,7 +658,7 @@ def get_visiray_inventory():
         elif stock_status == 'out_of_stock':
             query = query.filter((VisirayInventory.stock_quantity == 0) | (VisirayInventory.stock_quantity.is_(None)))
         
-        # 鍒嗛〉
+        # 分页
         result = paginate_query(query)
         result['items'] = [_with_display_part_number(item.to_dict()) for item in result['items']]
         
@@ -674,7 +675,7 @@ def get_visiray_inventory():
 
 @bp.route('/visiray/inventory', methods=['POST'])
 def create_visiray_inventory():
-    """鍒涘缓Visiray搴撳瓨璁板綍"""
+    """创建 Visiray 库存记录"""
     try:
         data = request.get_json()
         if not data:
@@ -693,7 +694,7 @@ def create_visiray_inventory():
         if VisirayInventory.query.get(inventory_goods_id):
             return jsonify({'success': False, 'message': '零件号已存在'}), 400
         
-        # 鍒涘缓搴撳瓨璁板綍
+        # 创建库存记录
         inventory = VisirayInventory(
             goods_id=inventory_goods_id,
             goods_name=data.get('goods_name') or part.part_name or part.sub_type or part.part_id,
@@ -731,7 +732,7 @@ def create_visiray_inventory():
 
 @bp.route('/visiray/inventory/<int:goods_id>', methods=['PUT'])
 def update_visiray_inventory(goods_id):
-    """鏇存柊Visiray搴撳瓨璁板綍"""
+    """更新 Visiray 库存记录"""
     try:
         inventory = VisirayInventory.query.get(goods_id)
         if not inventory:
@@ -747,7 +748,7 @@ def update_visiray_inventory(goods_id):
                 'message': '请求数据不能为空'
             }), 400
         
-        # 鏇存柊搴撳瓨璁板綍瀛楁
+        # 更新库存记录字段
         updatable_fields = [
             'goods_name', 'supplier', 'product_model', 'goods_type',
             'in_quantity', 'out_quantity', 'stock_quantity', 'unit',
@@ -776,7 +777,7 @@ def update_visiray_inventory(goods_id):
 
 @bp.route('/visiray/inventory/<int:goods_id>', methods=['DELETE'])
 def delete_visiray_inventory(goods_id):
-    """鍒犻櫎Visiray搴撳瓨璁板綍"""
+    """删除 Visiray 库存记录"""
     try:
         inventory = VisirayInventory.query.get(goods_id)
         if not inventory:
@@ -913,11 +914,11 @@ def delete_visiray_versioned_inventory(inventory_id):
 
 @bp.route('/visiray/inbound', methods=['GET'])
 def get_visiray_inbound_records():
-    """鑾峰彇Visiray鍏ュ簱璁板綍"""
+    """获取 Visiray 入库记录"""
     try:
         query = VisirayStockInRecord.query
         
-        # 鎼滅储鏉′欢
+        # 搜索条件
         keyword = request.args.get('keyword')
         if keyword:
             search_term = f"%{keyword}%"
@@ -940,7 +941,7 @@ def get_visiray_inbound_records():
             VisirayStockInRecord.in_record.desc(),
         )
 
-        # 鍒嗛〉
+        # 分页
         result = paginate_query(query)
         result['items'] = [_with_display_part_number(item.to_dict()) for item in result['items']]
         
@@ -955,15 +956,85 @@ def get_visiray_inbound_records():
             'message': f'获取入库记录失败: {str(e)}'
         }), 500
 
+@bp.route('/visiray/inbound/export', methods=['POST'])
+def export_visiray_inbound_records():
+    """批量导出入库单"""
+    try:
+        record_ids = (request.get_json(silent=True) or {}).get('record_ids')
+        if not isinstance(record_ids, list) or not record_ids:
+            return jsonify({'success': False, 'message': '请选择要导出的入库记录'}), 400
+        if len(record_ids) > 200:
+            return jsonify({'success': False, 'message': '单次最多导出200条入库记录'}), 400
+
+        normalized_ids = list(dict.fromkeys(str(item).strip() for item in record_ids if str(item).strip()))
+        if not normalized_ids:
+            return jsonify({'success': False, 'message': '请选择要导出的入库记录'}), 400
+        records = VisirayStockInRecord.query.filter(
+            VisirayStockInRecord.in_record.in_(normalized_ids)
+        ).all()
+        record_map = {record.in_record: record for record in records}
+        missing_ids = [record_id for record_id in normalized_ids if record_id not in record_map]
+        if missing_ids:
+            return jsonify({'success': False, 'message': f'入库记录不存在：{missing_ids[0]}'}), 404
+
+        export_items = []
+        for record_id in normalized_ids:
+            item = _with_display_part_number(record_map[record_id].to_dict())
+            part = _find_part_number(item.get('display_goods_id'))
+            unit_price = None
+            if item.get('related_voucher'):
+                purchase_items = VisirayPurchaseReceivingVoucher.query.filter_by(
+                    purchase_order_no=item['related_voucher']
+                ).all()
+                part_codes = {
+                    str(value)
+                    for value in (item.get('display_goods_id'), item.get('goods_id'), part.part_id if part else None)
+                    if value not in (None, '')
+                }
+                purchase_item = next((entry for entry in purchase_items if str(entry.product_code) in part_codes), None)
+                if not purchase_item and part:
+                    part_name = (item.get('goods_name') or part.part_name or '').strip()
+                    purchase_item = next(
+                        (entry for entry in purchase_items if (entry.product_name or '').strip() == part_name),
+                        None,
+                    )
+                if not purchase_item and len(purchase_items) == 1:
+                    purchase_item = purchase_items[0]
+                if purchase_item and purchase_item.unit_price is not None and float(purchase_item.unit_price) > 0:
+                    unit_price = purchase_item.unit_price
+            if part:
+                item['goods_name'] = item.get('goods_name') or part.part_name
+                material = Material.query.filter_by(visiray_part_id=part.part_id).first()
+                if not material:
+                    material = Material.query.filter_by(remark=_part_material_marker(part.part_id)).first()
+                if unit_price is None and material:
+                    latest_price = material.get_latest_price(item.get('part_version_id'))
+                    if latest_price and latest_price > 0:
+                        unit_price = latest_price
+                if unit_price is None and part.standard_cost and part.standard_cost > 0:
+                    unit_price = part.standard_cost
+            item['unit_price'] = float(unit_price) if unit_price is not None else None
+            export_items.append(item)
+
+        filename, stream = InventoryExportService.export_inbound(export_items)
+        return send_file(
+            stream,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'批量导出入库单失败: {str(e)}'}), 500
+
 @bp.route('/visiray/inbound', methods=['POST'])
 def create_visiray_inbound_record():
-    """鍒涘缓Visiray鍏ュ簱璁板綍"""
+    """创建 Visiray 入库记录"""
     try:
-        # 鑾峰彇鏁版嵁
+        # 获取数据
         if request.is_json:
             data = request.get_json()
         else:
-            # 濡傛灉鏄〃鍗曟暟鎹?
+            # 如果是表单数据
             data = request.form.to_dict()
         
         if not data:
@@ -971,20 +1042,24 @@ def create_visiray_inbound_record():
                 'success': False,
                 'message': '请求数据不能为空'
             }), 400
+
+        operator = str(data.get('operator') or '').strip()
+        if not operator:
+            return jsonify({'success': False, 'message': '采购人/备注不能为空'}), 400
         
-        # 鐢熸垚鍏ュ簱璁板綍鍙凤紙濡傛灉鏈彁渚涳級
+        # 生成入库记录号（如果未提供）
         in_record = data.get('in_record')
         if not in_record:
-            # 鐢熸垚鍞竴鐨勫叆搴撹褰曞彿
+            # 生成唯一的入库记录号
             in_record = _generate_record_stamp()
         
-        # 澶勭悊鍏ュ簱鏃ユ湡
+        # 处理入库日期
         in_date_value = data.get('in_date')
         in_date = None
         if in_date_value:
-            in_date = datetime.strptime(in_date_value, '%Y-%m-%d').date()
+            in_date = datetime.fromisoformat(in_date_value.replace('Z', '+00:00')).replace(tzinfo=None)
         else:
-            in_date = datetime.now().date()
+            in_date = datetime.now()
         
         goods_id_val = data.get('goods_id')
         if not goods_id_val:
@@ -1005,7 +1080,7 @@ def create_visiray_inbound_record():
             return jsonify({'success': False, 'message': '入库操作只允许选择入库，报废请走出库或库存调整流程'}), 400
         supplier_value = data.get('supplier') or data.get('supplier_name')
         
-        # 鍒涘缓鍏ュ簱璁板綍
+        # 创建入库记录
         inbound_record = VisirayStockInRecord(
             in_record=in_record,
             goods_id=inventory_goods_id,
@@ -1013,7 +1088,7 @@ def create_visiray_inbound_record():
             quantity=_int_value(data.get('quantity'), 0),
             unit=data.get('unit'),
             in_date=in_date,
-            operator=data.get('operator'),
+            operator=operator,
             shelf_location=data.get('shelf_location'),
             goods_type=data.get('goods_type') or part.main_type,
             supplier=supplier_value,
@@ -1121,7 +1196,7 @@ def create_visiray_inbound_record():
 
 @bp.route('/visiray/inbound/<string:in_record>', methods=['PUT'])
 def update_visiray_inbound_record(in_record):
-    """鏇存柊Visiray鍏ュ簱璁板綍"""
+    """更新 Visiray 入库记录"""
     try:
         inbound_record = VisirayStockInRecord.query.get(in_record)
         if not inbound_record:
@@ -1134,11 +1209,11 @@ def update_visiray_inbound_record(in_record):
         old_part_version_id = inbound_record.part_version_id
         old_inventory, old_inventory_kind = _load_inventory_for_part(old_goods_id, old_part_version_id)
         
-        # 鑾峰彇鏁版嵁
+        # 获取数据
         if request.is_json:
             data = request.get_json()
         else:
-            # 濡傛灉鏄〃鍗曟暟鎹?
+            # 如果是表单数据
             data = request.form.to_dict()
         
         if not data:
@@ -1151,18 +1226,18 @@ def update_visiray_inbound_record(in_record):
         if 'supplier_name' in data and 'supplier' not in data:
             data['supplier'] = data.get('supplier_name')
         
-        # 鏇存柊鍏ュ簱璁板綍瀛楁
+        # 更新入库记录字段
         updatable_fields = [
             'goods_id', 'supplier_name', 'quantity', 'unit',
             'in_date', 'operator', 'shelf_location', 'goods_type',
             'supplier', 'product_model', 'parent_record', 'inbound_type',
-            'related_voucher'  # 娣诲姞related_voucher瀛楁
+            'related_voucher'  # 添加 related_voucher 字段
         ]
         
         for field in updatable_fields:
             if field in data:
                 if field == 'in_date' and data[field]:
-                    setattr(inbound_record, field, datetime.strptime(data[field], '%Y-%m-%d').date())
+                    setattr(inbound_record, field, datetime.fromisoformat(data[field].replace('Z', '+00:00')).replace(tzinfo=None))
                 else:
                     setattr(inbound_record, field, data[field])
         gid = data.get('goods_id')
@@ -1247,7 +1322,7 @@ def update_visiray_inbound_record(in_record):
 
 @bp.route('/visiray/inbound/<string:in_record>', methods=['DELETE'])
 def delete_visiray_inbound_record(in_record):
-    """鍒犻櫎Visiray鍏ュ簱璁板綍"""
+    """删除 Visiray 入库记录"""
     try:
         inbound_record = VisirayStockInRecord.query.get(in_record)
         if not inbound_record:
@@ -1256,7 +1331,7 @@ def delete_visiray_inbound_record(in_record):
                 'message': '入库记录不存在'
             }), 404
         
-        # 濡傛灉鍏宠仈浜嗗簱瀛橈紝闇€瑕佹洿鏂板簱瀛樻暟閲?
+        # 如果关联了库存，需要更新库存数量
         if inbound_record.goods_id:
             inventory, inventory_kind = _load_inventory_for_part(inbound_record.goods_id, inbound_record.part_version_id)
             if inventory:
@@ -1265,7 +1340,7 @@ def delete_visiray_inbound_record(in_record):
                 if inventory.stock_quantity is not None:
                     inventory.stock_quantity = max(0, _int_value(inventory.stock_quantity, 0) - _int_value(inbound_record.quantity, 0))
                     
-                # 鏇存柊鍏ュ簱璁板綍瀛楁
+                # 更新入库记录字段
                 if inventory.in_record:
                     in_records = re.split(r'[;,；，]', inventory.in_record)
                     if in_record in in_records:
@@ -1291,7 +1366,7 @@ def delete_visiray_inbound_record(in_record):
 
 @bp.route('/visiray/inbound/<string:in_record>/voucher', methods=['GET'])
 def get_visiray_inbound_voucher(in_record):
-    """鑾峰彇Visiray鍏ュ簱璁板綍鍏宠仈鍑瘉"""
+    """获取 Visiray 入库记录的关联凭证"""
     try:
         inbound_record = VisirayStockInRecord.query.get(in_record)
         if not inbound_record or not inbound_record.related_voucher:
@@ -1300,7 +1375,7 @@ def get_visiray_inbound_voucher(in_record):
                 'message': '关联凭证不存在'
             }), 404
         
-        # 杩斿洖閲囪喘鍗曞彿浣滀负鍏宠仈鍑瘉
+        # 返回采购单号作为关联凭证
         return jsonify({
             'success': True,
             'data': {
@@ -1316,11 +1391,11 @@ def get_visiray_inbound_voucher(in_record):
 
 @bp.route('/visiray/outbound', methods=['GET'])
 def get_visiray_outbound_records():
-    """鑾峰彇Visiray鍑哄簱璁板綍"""
+    """获取 Visiray 出库记录"""
     try:
         query = VisirayStockOutRecord.query
         
-        # 鎼滅储鏉′欢
+        # 搜索条件
         keyword = request.args.get('keyword')
         if keyword:
             search_term = f"%{keyword}%"
@@ -1343,7 +1418,7 @@ def get_visiray_outbound_records():
             VisirayStockOutRecord.out_record_id.desc(),
         )
 
-        # 鍒嗛〉
+        # 分页
         result = paginate_query(query)
         items = []
         for item in result['items']:
@@ -1363,9 +1438,63 @@ def get_visiray_outbound_records():
             'message': f'获取出库记录失败: {str(e)}'
         }), 500
 
+@bp.route('/visiray/outbound/export', methods=['POST'])
+def export_visiray_outbound_records():
+    """批量导出出库单"""
+    try:
+        record_ids = (request.get_json(silent=True) or {}).get('record_ids')
+        if not isinstance(record_ids, list) or not record_ids:
+            return jsonify({'success': False, 'message': '请选择要导出的出库记录'}), 400
+        if len(record_ids) > 200:
+            return jsonify({'success': False, 'message': '单次最多导出200条出库记录'}), 400
+
+        try:
+            normalized_ids = list(dict.fromkeys(int(item) for item in record_ids))
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': '出库记录编号格式不正确'}), 400
+
+        records = VisirayStockOutRecord.query.filter(
+            VisirayStockOutRecord.out_record_id.in_(normalized_ids)
+        ).all()
+        record_map = {record.out_record_id: record for record in records}
+        missing_ids = [record_id for record_id in normalized_ids if record_id not in record_map]
+        if missing_ids:
+            return jsonify({'success': False, 'message': f'出库记录不存在：{missing_ids[0]}'}), 404
+
+        export_items = []
+        for record_id in normalized_ids:
+            item = _with_display_part_number(record_map[record_id].to_dict())
+            item['outbound_type'] = _normalize_outbound_type(item.get('outbound_type'))
+            part = _find_part_number(item.get('display_goods_id'))
+            if part:
+                item['goods_name'] = item.get('goods_name') or part.part_name
+                item['unit'] = part.unit
+                material = Material.query.filter_by(visiray_part_id=part.part_id).first()
+                if not material:
+                    material = Material.query.filter_by(remark=_part_material_marker(part.part_id)).first()
+                unit_price = None
+                if material:
+                    latest_price = material.get_latest_price(item.get('part_version_id'))
+                    if latest_price and latest_price > 0:
+                        unit_price = latest_price
+                if unit_price is None and part.standard_cost and part.standard_cost > 0:
+                    unit_price = part.standard_cost
+                item['unit_price'] = float(unit_price) if unit_price is not None else None
+            export_items.append(item)
+
+        filename, stream = InventoryExportService.export_outbound(export_items)
+        return send_file(
+            stream,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'批量导出出库单失败: {str(e)}'}), 500
+
 @bp.route('/visiray/outbound', methods=['POST'])
 def create_visiray_outbound_record():
-    """鍒涘缓Visiray鍑哄簱璁板綍"""
+    """创建 Visiray 出库记录"""
     try:
         data = request.get_json()
         if not data:
@@ -1373,8 +1502,12 @@ def create_visiray_outbound_record():
                 'success': False,
                 'message': '请求数据不能为空'
             }), 400
+
+        operator = str(data.get('operator') or '').strip()
+        if not operator:
+            return jsonify({'success': False, 'message': '出库人/备注不能为空'}), 400
         
-        # 鐢熸垚鍑哄簱璁板綍ID
+        # 生成出库记录 ID
         out_record_id = _generate_unique_out_record_id()
         
         goods_id_val = data.get('goods_id')
@@ -1391,8 +1524,8 @@ def create_visiray_outbound_record():
             allow_obsolete=True,
         )
         
-        # 鍒涘缓鍑哄簱璁板綍
-        # 闆朵欢蹇呴』瀛樺湪浜庡簱瀛樹腑锛屽悕绉颁粠搴撳瓨璇诲彇
+        # 创建出库记录
+        # 零件必须存在于库存中，名称从库存读取
         inventory, inventory_kind = _load_inventory_for_part(part.part_id, part_version_id)
         if not inventory:
             return jsonify({'success': False, 'message': '库存中不存在该零件，请先入库'}), 400
@@ -1413,7 +1546,7 @@ def create_visiray_outbound_record():
             goods_name=inventory.goods_name,
             quantity=quantity,
             out_date=datetime.strptime(data.get('out_date'), '%Y-%m-%d').date() if data.get('out_date') else datetime.now().date(),
-            operator=data.get('operator'),
+            operator=operator,
             shelf_location=data.get('shelf_location'),
             outbound_type=_normalize_outbound_type(data.get('outbound_type')),
             part_version_id=part_version_id,
@@ -1587,7 +1720,7 @@ def create_visiray_outbound_records_by_bom():
 
 @bp.route('/visiray/outbound/<int:out_record_id>', methods=['PUT'])
 def update_visiray_outbound_record(out_record_id):
-    """鏇存柊Visiray鍑哄簱璁板綍"""
+    """更新 Visiray 出库记录"""
     try:
         outbound_record = VisirayStockOutRecord.query.get(out_record_id)
         if not outbound_record:
@@ -1691,7 +1824,7 @@ def update_visiray_outbound_record(out_record_id):
 
 @bp.route('/visiray/outbound/<int:out_record_id>', methods=['DELETE'])
 def delete_visiray_outbound_record(out_record_id):
-    """鍒犻櫎Visiray鍑哄簱璁板綍"""
+    """删除 Visiray 出库记录"""
     try:
         outbound_record = VisirayStockOutRecord.query.get(out_record_id)
         if not outbound_record:
@@ -1700,7 +1833,7 @@ def delete_visiray_outbound_record(out_record_id):
                 'message': '出库记录不存在'
             }), 404
         
-        # 濡傛灉鍏宠仈浜嗗簱瀛橈紝闇€瑕佹洿鏂板簱瀛樻暟閲?
+        # 如果关联了库存，需要更新库存数量
         if outbound_record.goods_id:
             inventory, inventory_kind = _load_inventory_for_part(outbound_record.goods_id, outbound_record.part_version_id)
             if inventory:
@@ -1711,7 +1844,7 @@ def delete_visiray_outbound_record(out_record_id):
                 if inventory.stock_quantity < 0:
                     inventory.stock_quantity = 0
                     
-                # 鏇存柊鍑哄簱璁板綍瀛楁
+                # 更新出库记录字段
                 if inventory.out_record:
                     out_records = inventory.out_record.split(',')
                     out_record_str = str(out_record_id)
@@ -1738,11 +1871,11 @@ def delete_visiray_outbound_record(out_record_id):
 
 @bp.route('/visiray/purchase-orders', methods=['GET'])
 def get_visiray_purchase_orders():
-    """鑾峰彇Visiray閲囪喘鍏ュ簱鍗曟暟鎹?"""
+    """获取 Visiray 采购入库单数据"""
     try:
         query = VisirayPurchaseReceivingVoucher.query
         
-        # 鎼滅储鏉′欢
+        # 搜索条件
         keyword = request.args.get('keyword')
         if keyword:
             search_term = f"%{keyword}%"
@@ -1752,10 +1885,10 @@ def get_visiray_purchase_orders():
                 (VisirayPurchaseReceivingVoucher.product_name.like(search_term))
             )
         
-        # 鍒嗛〉
+        # 分页
         result = paginate_query(query)
 
-        # 涓虹‘淇濆噯纭€э紝閫愭潯璁＄畻闄勪欢鏁帮紙姣忛〉涓嶅ぇ锛屾€ц兘鍙帴鍙楋級
+        # 为确保准确性，逐条计算附件数（每页数量不大，性能可接受）
         items_with_counts = []
         for item in result['items']:
             cnt = VisirayPurchaseAttachment.query.filter_by(purchase_order_no=item.purchase_order_no).count()
@@ -1775,17 +1908,17 @@ def get_visiray_purchase_orders():
 
 @bp.route('/visiray/purchase-orders', methods=['POST'])
 def create_visiray_purchase_order():
-    """鍒涘缓Visiray閲囪喘鍏ュ簱鍗?"""
+    """创建 Visiray 采购入库单"""
     try:
-        # 纭繚涓婁紶鏂囦欢澶瑰瓨鍦?
+        # 确保上传文件夹存在
         invoice_folder = os.path.join(current_app.root_path, '..', 'uploads', 'invoices')
         contract_folder = os.path.join(current_app.root_path, '..', 'uploads', 'contracts')
         
-        # 鍒涘缓鏂囦欢澶癸紙濡傛灉涓嶅瓨鍦級
+        # 创建文件夹（如果不存在）
         os.makedirs(invoice_folder, exist_ok=True)
         os.makedirs(contract_folder, exist_ok=True)
         
-        # 澶勭悊鏂囦欢涓婁紶
+        # 处理文件上传
         invoice_filename = None
         contract_filename = None
         
@@ -1805,11 +1938,11 @@ def create_visiray_purchase_order():
                 contract_file.save(file_path)
                 contract_filename = filename
         
-        # 鑾峰彇鍏朵粬鏁版嵁
+        # 获取其他数据
         if request.is_json:
             data = request.get_json()
         else:
-            # 濡傛灉鏄〃鍗曟暟鎹?
+            # 如果是表单数据
             data = request.form.to_dict()
         
         if not data:
@@ -1818,15 +1951,15 @@ def create_visiray_purchase_order():
                 'message': '请求数据不能为空'
             }), 400
         
-        # 鐢熸垚閲囪喘鍗曞彿锛堝鏋滄湭鎻愪緵鎴栦负绌猴級
+        # 生成采购单号（如果未提供或为空）
         purchase_order_no = data.get('purchase_order_no')
         if not purchase_order_no:
-            # 鐢熸垚鍞竴鐨勯噰璐崟鍙凤紝鏍煎紡锛歅O + YYYYMMDD + HHMMSS + 4浣嶉殢鏈烘暟
+            # 生成唯一的采购单号，格式：PO + YYYYMMDD + HHMMSS + 4 位随机数
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
             random_num = str(uuid.uuid4().int)[:4]
             purchase_order_no = f"PO{timestamp}{random_num}"
         
-        # 澶勭悊鍏ュ簱鏃堕棿
+        # 处理入库时间
         receiving_time_value = data.get('receiving_time')
         receiving_time = None
         if receiving_time_value:
@@ -1840,7 +1973,7 @@ def create_visiray_purchase_order():
         if not VisirayPartNumber.query.get(pc):
             return jsonify({'success': False, 'message': '零件号不存在，请先在零件号申请中创建'}), 400
         
-        # 鍒涘缓閲囪喘鍏ュ簱鍗?
+        # 创建采购入库单
         purchase_order = VisirayPurchaseReceivingVoucher(
             purchase_order_no=purchase_order_no,
             product_code=data.get('product_code'),
@@ -1852,8 +1985,8 @@ def create_visiray_purchase_order():
             receiving_time=receiving_time,
             status=data.get('status', '待入库'),
             supplier=data.get('supplier'),
-            invoice_no=invoice_filename,  # 浠呭瓨鍌ㄦ枃浠跺悕
-            contract_pdf=contract_filename  # 浠呭瓨鍌ㄦ枃浠跺悕
+            invoice_no=invoice_filename,  # 仅存储文件名
+            contract_pdf=contract_filename  # 仅存储文件名
         )
         
         db.session.add(purchase_order)
@@ -2024,16 +2157,16 @@ def delete_purchase_attachment(purchase_order_no, attachment_id):
 
 @bp.route('/visiray/purchase-orders/<string:purchase_order_no>', methods=['PUT'])
 def update_visiray_purchase_order(purchase_order_no):
-    """鏇存柊Visiray閲囪喘鍏ュ簱鍗?"""
+    """更新 Visiray 采购入库单"""
     try:
         import os
         from werkzeug.utils import secure_filename
         
-        # 纭繚涓婁紶鏂囦欢澶瑰瓨鍦?
+        # 确保上传文件夹存在
         invoice_folder = os.path.join(current_app.root_path, '..', 'uploads', 'invoices')
         contract_folder = os.path.join(current_app.root_path, '..', 'uploads', 'contracts')
         
-        # 鍒涘缓鏂囦欢澶癸紙濡傛灉涓嶅瓨鍦級
+        # 创建文件夹（如果不存在）
         os.makedirs(invoice_folder, exist_ok=True)
         os.makedirs(contract_folder, exist_ok=True)
         
@@ -2044,9 +2177,9 @@ def update_visiray_purchase_order(purchase_order_no):
                 'message': '采购单不存在'
             }), 404
         
-        # 澶勭悊鏂囦欢涓婁紶
-        invoice_filename = purchase_order.invoice_no  # 淇濇寔鍘熸湁鏂囦欢鍚?
-        contract_filename = purchase_order.contract_pdf  # 淇濇寔鍘熸湁鏂囦欢鍚?
+        # 处理文件上传
+        invoice_filename = purchase_order.invoice_no  # 保持原有文件名
+        contract_filename = purchase_order.contract_pdf  # 保持原有文件名
         
         if 'invoice_no' in request.files:
             invoice_file = request.files['invoice_no']
@@ -2064,11 +2197,11 @@ def update_visiray_purchase_order(purchase_order_no):
                 contract_file.save(file_path)
                 contract_filename = filename
         
-        # 鑾峰彇鍏朵粬鏁版嵁
+        # 获取其他数据
         if request.is_json:
             data = request.get_json()
         else:
-            # 濡傛灉鏄〃鍗曟暟鎹?
+            # 如果是表单数据
             data = request.form.to_dict()
         
         if not data:
@@ -2077,7 +2210,7 @@ def update_visiray_purchase_order(purchase_order_no):
                 'message': '请求数据不能为空'
             }), 400
         
-        # 鏇存柊閲囪喘鍏ュ簱鍗曞瓧娈?
+        # 更新采购入库单字段
         updatable_fields = [
             'product_code', 'product_name', 'quantity', 'unit',
             'product_type', 'unit_price', 'status', 'supplier'
@@ -2087,12 +2220,12 @@ def update_visiray_purchase_order(purchase_order_no):
             if field in data:
                 setattr(purchase_order, field, data[field])
         
-        # 鐗瑰埆澶勭悊鏃堕棿瀛楁
+        # 特别处理时间字段
         if 'receiving_time' in data and data['receiving_time']:
             receiving_time = datetime.strptime(data['receiving_time'], '%Y-%m-%d').date()
             setattr(purchase_order, 'receiving_time', receiving_time)
         
-        # 鐗瑰埆澶勭悊鏂囦欢瀛楁
+        # 特别处理文件字段
         setattr(purchase_order, 'invoice_no', invoice_filename)
         setattr(purchase_order, 'contract_pdf', contract_filename)
         
@@ -2113,7 +2246,7 @@ def update_visiray_purchase_order(purchase_order_no):
 
 @bp.route('/visiray/purchase-orders/<string:purchase_order_no>', methods=['DELETE'])
 def delete_visiray_purchase_order(purchase_order_no):
-    """鍒犻櫎Visiray閲囪喘鍏ュ簱鍗?"""
+    """删除 Visiray 采购入库单"""
     try:
         purchase_order = VisirayPurchaseReceivingVoucher.query.filter_by(purchase_order_no=purchase_order_no).first()
         if not purchase_order:
@@ -2139,7 +2272,7 @@ def delete_visiray_purchase_order(purchase_order_no):
 
 @bp.route('/visiray/purchase-orders/<string:purchase_order_no>/invoice', methods=['GET'])
 def get_visiray_purchase_invoice(purchase_order_no):
-    """鑾峰彇Visiray閲囪喘鍙戠エPDF"""
+    """获取 Visiray 采购发票 PDF"""
     try:
         import os
         
@@ -2150,7 +2283,7 @@ def get_visiray_purchase_invoice(purchase_order_no):
                 'message': '采购发票文件不存在'
             }), 404
         
-        # 浠庢枃浠剁郴缁熶腑璇诲彇鏂囦欢
+        # 从文件系统中读取文件
         invoice_folder = os.path.join(current_app.root_path, '..', 'uploads', 'invoices')
         file_path = os.path.join(invoice_folder, purchase_order.invoice_no)
         
@@ -2160,7 +2293,7 @@ def get_visiray_purchase_invoice(purchase_order_no):
                 'message': '采购发票文件不存在'
             }), 404
         
-        # 杩斿洖PDF鏂囦欢
+        # 返回 PDF 文件
         return Response(
             open(file_path, 'rb').read(),
             mimetype='application/pdf',
@@ -2203,7 +2336,7 @@ def delete_visiray_purchase_invoice(purchase_order_no):
 
 @bp.route('/visiray/purchase-orders/<string:purchase_order_no>/contract', methods=['GET'])
 def get_visiray_purchase_contract(purchase_order_no):
-    """鑾峰彇Visiray鍏ュ簱鍚堝悓PDF"""
+    """获取 Visiray 入库合同 PDF"""
     try:
         import os
         
@@ -2214,7 +2347,7 @@ def get_visiray_purchase_contract(purchase_order_no):
                 'message': '入库合同文件不存在'
             }), 404
         
-        # 浠庢枃浠剁郴缁熶腑璇诲彇鏂囦欢
+        # 从文件系统中读取文件
         contract_folder = os.path.join(current_app.root_path, '..', 'uploads', 'contracts')
         file_path = os.path.join(contract_folder, purchase_order.contract_pdf)
         
@@ -2224,7 +2357,7 @@ def get_visiray_purchase_contract(purchase_order_no):
                 'message': '入库合同文件不存在'
             }), 404
         
-        # 杩斿洖PDF鏂囦欢
+        # 返回 PDF 文件
         return Response(
             open(file_path, 'rb').read(),
             mimetype='application/pdf',
@@ -2846,22 +2979,22 @@ def delete_supplier_price(price_id):
 
 @bp.route('/visiray/dashboard/stats', methods=['GET'])
 def get_visiray_dashboard_stats():
-    """鑾峰彇Visiray浠〃鐩樼粺璁℃暟鎹?"""
+    """获取 Visiray 仪表盘统计数据"""
     try:
-        # 鑾峰彇搴撳瓨缁熻鏁版嵁
+        # 获取库存统计数据
         total_inventory_items = VisirayInventory.query.count()
         total_inventory_value = db.session.query(db.func.sum(VisirayInventory.stock_quantity)).scalar() or 0
         
-        # 鑾峰彇鍏ュ簱璁板綍缁熻鏁版嵁
+        # 获取入库记录统计数据
         total_inbound_records = VisirayStockInRecord.query.count()
         
-        # 鑾峰彇鍑哄簱璁板綍缁熻鏁版嵁
+        # 获取出库记录统计数据
         total_outbound_records = VisirayStockOutRecord.query.count()
         
-        # 鑾峰彇閲囪喘鍏ュ簱鍗曠粺璁℃暟鎹?
+        # 获取采购入库单统计数据
         total_purchase_orders = VisirayPurchaseReceivingVoucher.query.count()
         
-        # 鑾峰彇渚涘簲鍟嗕俊鎭粺璁℃暟鎹?
+        # 获取供应商信息统计数据
         total_suppliers = VisiraySupplierInformation.query.count()
         
         return jsonify({
@@ -2885,9 +3018,9 @@ def get_visiray_dashboard_stats():
 
 @bp.route('/visiray/dashboard/inventory/top-items', methods=['GET'])
 def get_visiray_top_inventory_items():
-    """鑾峰彇搴撳瓨鏈€澶氱殑鍓?0涓揣鍝?"""
+    """获取库存数量最多的前 10 个货品"""
     try:
-        # 鑾峰彇搴撳瓨鏁伴噺鏈€澶氱殑鍓?0涓揣鍝?
+        # 获取库存数量最多的前 10 个货品
         top_items = db.session.query(
             VisirayInventory.goods_name,
             VisirayInventory.stock_quantity
@@ -2909,16 +3042,16 @@ def get_visiray_top_inventory_items():
 
 @bp.route('/visiray/dashboard/purchase/stats', methods=['GET'])
 def get_visiray_purchase_stats():
-    """鑾峰彇閲囪喘缁熻鏁版嵁"""
+    """获取采购统计数据"""
     try:
-        # 鑾峰彇閲囪喘鍏ュ簱鍗曟€绘暟
+        # 获取采购入库单总数
         total_purchase_orders = VisirayPurchaseReceivingVoucher.query.count()
         
-        # 鑾峰彇涓嶅悓鐘舵€佺殑閲囪喘鍗曟暟閲?
+        # 获取不同状态的采购单数量
         status_stats = {}
         statuses = db.session.query(VisirayPurchaseReceivingVoucher.status).distinct().all()
         for status in statuses:
-            if status[0]:  # 纭繚鐘舵€佷笉涓虹┖
+            if status[0]:  # 确保状态不为空
                 count = VisirayPurchaseReceivingVoucher.query.filter_by(status=status[0]).count()
                 status_stats[status[0]] = count
         
@@ -2939,9 +3072,9 @@ def get_visiray_purchase_stats():
 
 @bp.route('/visiray/dashboard/supplier/stats', methods=['GET'])
 def get_visiray_supplier_stats():
-    """鑾峰彇渚涘簲鍟嗙粺璁℃暟鎹?"""
+    """获取供应商统计数据"""
     try:
-        # 鑾峰彇渚涘簲鍟嗘€绘暟
+        # 获取供应商总数
         total_suppliers = VisiraySupplierInformation.query.count()
         
         return jsonify({
@@ -2958,7 +3091,7 @@ def get_visiray_supplier_stats():
         }), 500
 
 
-# 娣诲姞涓€涓柊鐨勬暟鎹粨鏋勬潵瀛樺偍宸茬敓鎴愮殑闆朵欢鍙凤紙鐙珛浜庡簱瀛樼鐞嗭級
+# 使用独立数据结构存储已生成的零件号，与库存管理相互独立
 generated_part_numbers = set()
 
 @bp.route('/visiray/part-number-rules', methods=['GET'])
@@ -3109,89 +3242,76 @@ def delete_part_number_rule(rule_id):
         }), 400
 
 def generate_part_number(part_category_code, main_category_code, sub_category_index=0):
-    """鐢熸垚闆朵欢鍙?
-    
-    缂栫爜瑙勫垯锛?
-    - 闆堕儴浠剁被鍒紪鐮侊細瀹氬埗浠讹細0-4 澶栬喘浠讹細5-9
-    - 澶х被缂栫爜锛氬厜瀛︿欢锛?0-19 鏈烘浠讹細20-39 鐢垫皵/瀛愪欢锛?0-59 杞欢锛?0-69 鍖栧鍝侊細70-79 鍏朵粬锛?0-99
-    - 灏忕被缂栫爜锛氭寜绱㈠紩鍒嗛厤鑼冨洿 0000-0009, 0010-0019, ..., 0090-0099
-    - 浜у搧缂栧彿锛?000-9999
-    - 鐗堟湰鍙凤細01锛堥粯璁わ級
-    - 鎬诲叡11浣嶏細闆堕儴浠剁被鍒?1浣? + 澶х被(2浣? + 灏忕被(2浣? + 浜у搧缂栧彿(4浣? + 鐗堟湰鍙?2浣?
-    
-    鐢熸垚閫昏緫锛?
-    1. 浠庝骇鍝佺紪鍙?000寮€濮嬶紝姣忔鐐瑰嚮鍔犱竴
-    2. 濡傛灉浜у搧缂栧彿杈惧埌9999锛屽氨澧炲姞灏忕被缂栫爜
-    3. 濡傛灉灏忕被缂栫爜瓒呭嚭褰撳墠鑼冨洿锛屽氨澧炲姞灏忕被绱㈠紩锛堝嵆杩涘叆涓嬩竴涓寖鍥达級
-    4. 濡傛灉灏忕被绱㈠紩瓒呭嚭鑼冨洿锛?-9锛夛紝灏卞姞澶х被鐨勬暟瀛?
-    5. 澶х被缂栫爜鍒版瀬闄愪簡灏卞姞闆堕儴浠剁被鍒殑鏁板瓧
-    6. 闆朵欢鍙风敵璇峰姛鑳戒笌搴撳瓨绠＄悊琛ㄧ嫭绔?
+    """生成零件号。
+
+    编码由零部件类别、大类、小类、产品编号和版本号组成。产品编号用尽后
+    依次进位到小类索引、大类和零部件类别；生成结果与库存管理相互独立。
     """
     try:
-        # 浣跨敤鐙珛鐨勫瓨鍌ㄦ潵璺熻釜宸茬敓鎴愮殑闆朵欢鍙?
+        # 使用独立存储跟踪已生成的零件号
         global generated_part_numbers
         
-        # 鏍规嵁灏忕被绱㈠紩璁＄畻灏忕被缂栫爜鑼冨洿鐨勮捣濮嬪€?(0, 10, 20, ..., 90)
+        # 根据小类索引计算小类编码范围的起始值（0、10、20……90）
         sub_category_start = sub_category_index * 10
-        # 浠庝骇鍝佺紪鍙?000寮€濮嬪皾璇曠敓鎴?
+        # 从产品编号 0000 开始尝试生成
         product_number = 0
-        # 鐗堟湰鍙烽粯璁や负01
+        # 版本号默认为 01
         version_number = 1
-        # 褰撳墠灏忕被缂栫爜浠庤寖鍥磋捣濮嬪€煎紑濮?
+        # 当前小类编码从范围起始值开始
         sub_category_code = sub_category_start
         
-        # 灏濊瘯鐢熸垚闆朵欢鍙凤紝鐩村埌鎵惧埌涓€涓湭琚娇鐢ㄧ殑缂栧彿
+        # 持续生成零件号，直到找到未被使用的编号
         while True:
-            # 鏍煎紡鍖栦负11浣嶆暟瀛楋細闆堕儴浠剁被鍒?1浣? + 澶х被(2浣? + 灏忕被(2浣? + 浜у搧缂栧彿(4浣? + 鐗堟湰鍙?2浣?
+            # 格式化为 11 位数字：类别 1 位 + 大类 2 位 + 小类 2 位 + 产品编号 4 位 + 版本号 2 位
             part_digits = f"{part_category_code}{main_category_code:02d}{sub_category_code:02d}{product_number:04d}{version_number:02d}"
             
             # xyh modi
             #part_number = f"VISB{part_digits}"
             part_number = f"{PN_HEAD}{part_digits}"
             
-            # 妫€鏌ョ敓鎴愮殑闆朵欢鍙锋槸鍚﹀凡瀛樺湪
+            # 检查生成的零件号是否已存在
             exists_in_set = part_number in generated_part_numbers
             exists_in_db = VisirayPartNumber.query.get(part_number) is not None
             if not exists_in_set and not exists_in_db:
-                # 妫€鏌ユ槸鍚﹀湪姝ｇ‘鐨勭紪鐮佽寖鍥村唴
+                # 检查是否位于正确的编码范围
                 if is_valid_part_number(part_number, part_category_code, main_category_code):
-                    # 灏嗘柊鐢熸垚鐨勯浂浠跺彿娣诲姞鍒伴泦鍚堜腑
+                    # 将新生成的零件号加入集合
                     generated_part_numbers.add(part_number)
                     return part_number
             
-            # 濡傛灉褰撳墠浜у搧缂栧彿宸蹭娇鐢紝灏濊瘯涓嬩竴涓骇鍝佺紪鍙?
+            # 当前产品编号已被使用时，尝试下一个产品编号
             product_number += 1
             
-            # 濡傛灉浜у搧缂栧彿瓒呭嚭鑼冨洿锛屽鍔犲皬绫荤紪鐮?
+            # 产品编号超出范围时，增加小类编码
             if product_number > 9999:
                 product_number = 0
                 sub_category_code += 1
                 
-                # 妫€鏌ユ槸鍚﹁秴鍑哄綋鍓嶅皬绫昏寖鍥?
+                # 检查是否超出当前小类范围
                 if sub_category_code >= sub_category_start + 10:
-                    # 瓒呭嚭褰撳墠灏忕被鑼冨洿锛屽鍔犲皬绫荤储寮?
+                    # 超出当前小类范围时，增加小类索引
                     sub_category_index += 1
                     
-                    # 濡傛灉灏忕被绱㈠紩瓒呭嚭鑼冨洿锛?-9锛夛紝澧炲姞澶х被缂栫爜
+                    # 小类索引超出 0 到 9 时，增加大类编码
                     if sub_category_index > 9:
                         sub_category_index = 0
                         main_category_code += 1
                         
-                        # 妫€鏌ュぇ绫荤紪鐮佹槸鍚﹁秴鍑鸿寖鍥?
+                        # 检查大类编码是否超出范围
                         if not is_main_category_code_valid(main_category_code):
                             main_category_code = get_main_category_start_code(main_category_code)
                             part_category_code += 1
                             
-                            # 妫€鏌ラ浂閮ㄤ欢绫诲埆缂栫爜鏄惁瓒呭嚭鑼冨洿
+                            # 检查零部件类别编码是否超出范围
                             if part_category_code > 9:
                                 raise Exception('鏃犳硶鐢熸垚鏂扮殑闆朵欢鍙凤細鎵€鏈夌紪鐮佽寖鍥村凡鐢ㄥ畬')
                     
-                    # 閲嶆柊璁＄畻灏忕被缂栫爜鑼冨洿鐨勮捣濮嬪€?
+                    # 重新计算小类编码范围的起始值
                     sub_category_start = sub_category_index * 10
                     sub_category_code = sub_category_start
         
     except Exception as e:
-        # 濡傛灉鍑虹幇寮傚父锛岃繑鍥炰竴涓粯璁ょ殑闆朵欢鍙?
+        # 出现异常时返回默认零件号
         default_digits = f"{part_category_code}{main_category_code:02d}{(sub_category_index * 10):02d}0000{1:02d}"
         
         # xyh modi
@@ -3202,7 +3322,7 @@ def generate_part_number(part_category_code, main_category_code, sub_category_in
         return default_number
 
 def is_valid_part_number(part_number, part_category_code, main_category_code):
-    """妫€鏌ラ浂浠跺彿鏄惁鍦ㄦ纭殑缂栫爜鑼冨洿鍐?"""
+    """检查零件号是否位于正确的编码范围内。"""
     try:
         # xyh modi
         #digits = part_number[4:] if part_number.startswith('VISB') else part_number
@@ -3211,12 +3331,12 @@ def is_valid_part_number(part_number, part_category_code, main_category_code):
         if len(digits) != 11:
             return False
             
-        # 妫€鏌ラ浂閮ㄤ欢绫诲埆缂栫爜
+        # 检查零部件类别编码
         part_category_digit = int(digits[0])
         if part_category_digit != part_category_code:
             return False
             
-        # 妫€鏌ュぇ绫荤紪鐮?
+        # 检查大类编码
         main_category_digits = int(digits[1:3])
         if not is_main_category_in_range(main_category_digits, main_category_code):
             return False
@@ -3226,18 +3346,18 @@ def is_valid_part_number(part_number, part_category_code, main_category_code):
         return False
 
 def is_main_category_in_range(main_category_digits, main_category_code):
-    """妫€鏌ュぇ绫荤紪鐮佹槸鍚﹀湪姝ｇ‘鐨勮寖鍥村唴"""
-    # 澶х被缂栫爜瑙勫垯锛氬厜瀛︿欢锛?0-19 鏈烘浠讹細20-39 鐢垫皵/瀛愪欢锛?0-59 杞欢锛?0-69 鍖栧鍝侊細70-79 鍏朵粬锛?0-99
+    """检查大类编码是否位于正确的范围内。"""
+    # 大类编码范围：光学件 0-19、机械件 20-39、电气/电子件 40-59、软件 60-69、化学品 70-79、其他 80-99
     ranges = {
-        0: (0, 19),    # 鍏夊浠?
-        20: (20, 39),  # 鏈烘浠?
-        40: (40, 59),  # 鐢垫皵/瀛愪欢
-        60: (60, 69),  # 杞欢
-        70: (70, 79),  # 鍖栧鍝?
-        80: (80, 99)   # 鍏朵粬
+        0: (0, 19),    # 光学件
+        20: (20, 39),  # 机械件
+        40: (40, 59),  # 电气/电子件
+        60: (60, 69),  # 软件
+        70: (70, 79),  # 化学品
+        80: (80, 99)   # 其他
     }
     
-    # 鎵惧埌瀵瑰簲鐨勫ぇ绫昏寖鍥?
+    # 找到对应的大类范围
     for start, (range_start, range_end) in ranges.items():
         if main_category_code >= range_start and main_category_code <= range_end:
             return main_category_digits >= range_start and main_category_digits <= range_end
@@ -3245,15 +3365,15 @@ def is_main_category_in_range(main_category_digits, main_category_code):
     return False
 
 def is_main_category_code_valid(main_category_code):
-    """妫€鏌ュぇ绫荤紪鐮佹槸鍚︽湁鏁?"""
-    # 澶х被缂栫爜瑙勫垯锛氬厜瀛︿欢锛?0-19 鏈烘浠讹細20-39 鐢垫皵/瀛愪欢锛?0-59 杞欢锛?0-69 鍖栧鍝侊細70-79 鍏朵粬锛?0-99
+    """检查大类编码是否有效。"""
+    # 大类编码范围：光学件 0-19、机械件 20-39、电气/电子件 40-59、软件 60-69、化学品 70-79、其他 80-99
     valid_ranges = [
-        (0, 19),    # 鍏夊浠?
-        (20, 39),   # 鏈烘浠?
-        (40, 59),   # 鐢垫皵/瀛愪欢
-        (60, 69),   # 杞欢
-        (70, 79),   # 鍖栧鍝?
-        (80, 99)    # 鍏朵粬
+        (0, 19),    # 光学件
+        (20, 39),   # 机械件
+        (40, 59),   # 电气/电子件
+        (60, 69),   # 软件
+        (70, 79),   # 化学品
+        (80, 99)    # 其他
     ]
     
     for range_start, range_end in valid_ranges:
@@ -3263,15 +3383,15 @@ def is_main_category_code_valid(main_category_code):
     return False
 
 def get_main_category_start_code(main_category_code):
-    """鑾峰彇澶х被缂栫爜鐨勮捣濮嬪€?"""
-    # 澶х被缂栫爜瑙勫垯锛氬厜瀛︿欢锛?0-19 鏈烘浠讹細20-39 鐢垫皵/瀛愪欢锛?0-59 杞欢锛?0-69 鍖栧鍝侊細70-79 鍏朵粬锛?0-99
+    """获取大类编码的起始值。"""
+    # 大类编码范围：光学件 0-19、机械件 20-39、电气/电子件 40-59、软件 60-69、化学品 70-79、其他 80-99
     ranges = [
-        (0, 19),    # 鍏夊浠?
-        (20, 39),   # 鏈烘浠?
-        (40, 59),   # 鐢垫皵/瀛愪欢
-        (60, 69),   # 杞欢
-        (70, 79),   # 鍖栧鍝?
-        (80, 99)    # 鍏朵粬
+        (0, 19),    # 光学件
+        (20, 39),   # 机械件
+        (40, 59),   # 电气/电子件
+        (60, 69),   # 软件
+        (70, 79),   # 化学品
+        (80, 99)    # 其他
     ]
     
     for range_start, range_end in ranges:
@@ -3282,7 +3402,7 @@ def get_main_category_start_code(main_category_code):
 
 @bp.route('/visiray/part-number/apply', methods=['POST'])
 def apply_part_number():
-    """鐢宠闆朵欢鍙?"""
+    """申请零件号。"""
     try:
         user = _get_request_user()
         if not user or not getattr(user, 'is_active', True):
@@ -3294,27 +3414,27 @@ def apply_part_number():
                 'message': '请求数据不能为空'
             }), 400
         
-        # 闆堕儴浠剁被鍒?(custom: 瀹氬埗浠? purchased: 澶栬喘浠?
+        # 零部件类别（custom：定制件，purchased：外购件）
         part_category = data.get('partCategory')
-        # 澶х被
+        # 大类
         main_category = data.get('mainCategory')
-        # 灏忕被
+        # 小类
         sub_category = data.get('subCategory')
-        # 闆朵欢鍚嶇О
+        # 零件名称
         part_name = (data.get('partName') or data.get('part_name') or '').strip()
         unit = data.get('unit') or 'pcs'
         standard_cost = _to_float(data.get('standard_cost', data.get('standardCost', 0)))
         remark = (data.get('remark') or '').strip() or None
-        # 闆朵欢鎻忚堪
+        # 零件描述
         part_description = data.get('partDescription')
-        # 渚涘簲鍟?
+        # 供应商
         supplier = data.get('supplier')
-        # 鏉愭枡
+        # 材料
         material = data.get('material')
-        # 瑙勬牸
+        # 规格
         specification = data.get('specification')
         
-        # 楠岃瘉蹇呭～瀛楁
+        # 验证必填字段
         if not part_category or not main_category:
             return jsonify({
                 'success': False,
@@ -3327,13 +3447,14 @@ def apply_part_number():
             }), 400
         
         # 旧版固定编码计算已移除。零件号生成只使用当前启用的零件号规则配置。
-        # partCategory / mainCategory / subCategory 作为规则输入，由 PartNumberRuleService 解析。        # 鐢熸垚闆朵欢鍙凤紙涓庡簱瀛樼鐞嗚〃鐙珛锛夛紝瑙勫垯鏉ヨ嚜褰撳墠鍚敤鐨勯浂浠跺彿瑙勫垯閰嶇疆
+        # partCategory / mainCategory / subCategory 作为规则输入，由 PartNumberRuleService 解析。
+        # 生成与库存管理表独立的零件号，规则来自当前启用的零件号规则配置。
         part_number = PartNumberRuleService.generate_part_number(data, generated_part_numbers)
         generated_part_numbers.add(part_number)
         
-        # 闆朵欢鍙风敵璇峰姛鑳戒笌搴撳瓨绠＄悊琛ㄧ嫭绔嬶紝涓嶄繚瀛樺埌搴撳瓨绠＄悊涓?
+        # 零件号申请与库存管理相互独立，不保存到库存管理表
         
-        # 淇濆瓨闆朵欢鍙峰埌鏁版嵁搴?
+        # 保存零件号到数据库
         part_number_record = VisirayPartNumber(
             part_id=part_number,
             category=part_category,
@@ -3359,7 +3480,7 @@ def apply_part_number():
             getattr(synced_material, 'standard_cost', None),
         )
         
-        # 杩斿洖鐢熸垚鐨勯浂浠跺彿
+        # 返回生成的零件号
         return jsonify({
             'success': True,
             'message': '零件号申请成功',
@@ -3540,12 +3661,12 @@ def create_part_number_next_version(part_id):
 
 @bp.route('/visiray/part-numbers', methods=['GET'])
 def get_part_numbers():
-    """鑾峰彇鎵€鏈夐浂浠跺彿鍒楄〃"""
+    """获取所有零件号列表。"""
     try:
         user = _get_request_user()
         query = VisirayPartNumber.query.order_by(VisirayPartNumber.created_at.desc())
         
-        # 鎼滅储鏉′欢
+        # 搜索条件
         keyword = request.args.get('keyword')
         if keyword:
             search_term = f"%{keyword}%"
@@ -3673,7 +3794,7 @@ def update_part_number(part_id):
         if not record:
             return jsonify({'success': False, 'message': '零件号不存在'}), 404
 
-        # 鏉冮檺锛氬垱寤轰汉鎴朼dmin
+        # 权限：创建人或管理员
         is_admin = False
         try:
             is_admin = getattr(user, 'has_role', lambda x: False)('admin')
@@ -4429,7 +4550,7 @@ def import_part_numbers_from_xlsx():
 
 @bp.route('/visiray/register', methods=['POST'])
 def visiray_register():
-    """Visiray鐢ㄦ埛娉ㄥ唽"""
+    """Visiray 用户注册。"""
     try:
         data = request.get_json()
         if not data:
@@ -4438,7 +4559,7 @@ def visiray_register():
                 'message': '请求数据不能为空'
             }), 400
         
-        # 楠岃瘉蹇呭～瀛楁
+        # 验证必填字段
         required_fields = ['username', 'account', 'password', 'confirm_password']
         for field in required_fields:
             if not data.get(field):
@@ -4447,7 +4568,7 @@ def visiray_register():
                     'message': f'{field}不能为空'
                 }), 400
         
-        # 楠岃瘉瀵嗙爜闀垮害
+        # 验证密码长度
         password = data.get('password', '')
         if len(password) < 6:
             return jsonify({
@@ -4455,14 +4576,14 @@ def visiray_register():
                 'message': '密码长度不能少于6位'
             }), 400
         
-        # 楠岃瘉瀵嗙爜纭
+        # 验证密码确认
         if password != data.get('confirm_password'):
             return jsonify({
                 'success': False,
                 'message': '两次输入的密码不一致'
             }), 400
         
-        # 妫€鏌ヨ处鎴锋槸鍚﹀凡瀛樺湪
+        # 检查账户是否已存在
         existing_user = VisirayUserAccount.query.filter_by(account=data['account']).first()
         if existing_user:
             return jsonify({
@@ -4470,11 +4591,11 @@ def visiray_register():
                 'message': '璐︽埛宸插瓨鍦?'
             }), 400
         
-        # 鍒涘缓鏂扮敤鎴?
+        # 创建新用户
         new_user = VisirayUserAccount(
             username=data['username'],
             account=data['account'],
-            password=generate_password_hash(password)  # 瀵嗙爜鍝堝笇澶勭悊
+            password=generate_password_hash(password)  # 密码哈希处理
         )
         
         db.session.add(new_user)
@@ -4497,7 +4618,7 @@ def visiray_register():
 
 @bp.route('/visiray/login', methods=['POST'])
 def visiray_login():
-    """Visiray鐢ㄦ埛鐧诲綍"""
+    """Visiray 用户登录。"""
     try:
         data = request.get_json()
         if not data:
@@ -4506,7 +4627,7 @@ def visiray_login():
                 'message': '请求数据不能为空'
             }), 400
         
-        # 楠岃瘉蹇呭～瀛楁
+        # 验证必填字段
         account = data.get('account', '').strip()
         password = data.get('password', '')
         
@@ -4516,7 +4637,7 @@ def visiray_login():
                 'message': '璐︽埛鍜屽瘑鐮佷笉鑳戒负绌?'
             }), 400
         
-        # 鏌ユ壘鐢ㄦ埛
+        # 查找用户
         user = VisirayUserAccount.query.filter_by(account=account).first()
         if not user or not check_password_hash(user.password, password):
             return jsonify({
@@ -4524,7 +4645,7 @@ def visiray_login():
                 'message': '账号或密码错误'
             }), 401
         
-        # 鐧诲綍鎴愬姛锛屽啓鍏ヤ細璇濅互渚垮悗缁姹傝瘑鍒垱寤轰汉
+        # 登录成功后写入会话，供后续请求识别创建人
         try:
             session['visiray_account'] = user.account
             session['visiray_username'] = user.username
